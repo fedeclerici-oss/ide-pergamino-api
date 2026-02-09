@@ -1,4 +1,5 @@
 fastapi
 uvicorn
-geopy
 requests
+geopy
+
