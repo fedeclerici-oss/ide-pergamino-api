@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 # =========================
 
 DATA_DIR = "data"
-DATA_PATH = os.path.join(DATA_DIR, "lugares_v2.geojson")
+DATA_PATH = os.path.join(DATA_DIR, "lugares_v3.geojson")
+
 
 
 # Link DIRECTO de descarga desde Drive (MUY IMPORTANTE)
@@ -151,5 +152,6 @@ def buscar(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+
 
 
