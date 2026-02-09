@@ -47,7 +47,6 @@ def cargar_datos_remotos():
 
     data = r.json()
 
-    # ⚠️ TU JSON ES UNA LISTA, NO UN DICCIONARIO
     if isinstance(data, list):
         LUGARES = data
     else:
@@ -140,6 +139,7 @@ def buscar_cerca(
         "resultados": len(encontrados),
         "lugares": encontrados[:50]
     }
+
 
 
 
