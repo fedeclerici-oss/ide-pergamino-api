@@ -1,112 +1,59 @@
-from fastapi import FastAPI, Query
-from typing import List, Optional
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
 import json
-import os
 
 app = FastAPI(
-    title="IDE Pergamino API",
-    description="API contextual para consultas territoriales",
-    version="1.0.0"
+    title="API Lugares",
+    description="API para servir lugares desde un GeoJSON",
+    version="1.0.0",
 )
 
-# =========================
-# CARGA DE DATOS
-# =========================
+# CORS (abrimos todo por ahora, después se ajusta)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-DATA_PATH = "data/lugares.geojson"  # ajustá si el path es otro
+# ---- RUTA ABSOLUTA AL ARCHIVO ----
+BASE_DIR = Path(__file__).resolve().parent
+DATA_PATH = BASE_DIR / "data" / "lugares.geojson"
 
-with open(DATA_PATH, "r", encoding="utf-8") as f:
-    geojson = json.load(f)
+# ---- CARGA DEL GEOJSON ----
+try:
+    with open(DATA_PATH, "r", encoding="utf-8") as f:
+        GEOJSON_DATA = json.load(f)
+except FileNotFoundError:
+    raise RuntimeError(f"No se encontró el archivo: {DATA_PATH}")
 
-LUGARES = [feature["properties"] for feature in geojson["features"]]
-
-# =========================
-# FILTRO DE TIPOS ÚTILES
-# =========================
-
-TIPOS_UTILES = [
-    "escuela",
-    "educacion",
-    "salud",
-    "hospital",
-    "plaza",
-    "espacio",
-    "obra",
-    "municipal",
-    "centro",
-    "policia",
-    "bomberos"
-]
-
-def es_lugar_util(lugar: dict) -> bool:
-    texto = " ".join([
-        str(lugar.get("nombre", "")),
-        str(lugar.get("tipo", "")),
-        str(lugar.get("subtipo", "")),
-        str(lugar.get("descripcion", "")),
-        str(lugar.get("capa_origen", ""))
-    ]).lower()
-
-    return any(t in texto for t in TIPOS_UTILES)
-
-LUGARES_UTILES = [l for l in LUGARES if es_lugar_util(l)]
-
-# =========================
-# ENDPOINT BASE
-# =========================
+# ---- ENDPOINTS ----
 
 @app.get("/")
-def home():
+def root():
     return {
-        "estado": "ok",
-        "lugares_totales": len(LUGARES),
-        "lugares_utiles": len(LUGARES_UTILES)
+        "status": "ok",
+        "message": "API de Lugares funcionando 🚀"
     }
 
-# =========================
-# NUEVO ENDPOINT CONTEXTUAL
-# =========================
+@app.get("/lugares")
+def get_lugares():
+    return GEOJSON_DATA
 
-@app.get("/buscar_contexto")
-def buscar_contexto(
-    q: str = Query(..., description="Texto libre: barrio, calle, lugar, institución"),
-    limite: int = 10
-):
-    q = q.lower().strip()
-    resultados = []
+@app.get("/lugares/{lugar_id}")
+def get_lugar_by_id(lugar_id: str):
+    features = GEOJSON_DATA.get("features", [])
 
-    for lugar in LUGARES_UTILES:
-        score = 0
+    for feature in features:
+        props = feature.get("properties", {})
+        if str(props.get("id")) == lugar_id:
+            return feature
 
-        campos = {
-            "nombre": lugar.get("nombre"),
-            "tipo": lugar.get("tipo"),
-            "subtipo": lugar.get("subtipo"),
-            "descripcion": lugar.get("descripcion"),
-            "capa_origen": lugar.get("capa_origen")
-        }
+    raise HTTPException(status_code=404, detail="Lugar no encontrado")
 
-        for valor in campos.values():
-            if valor and q in str(valor).lower():
-                score += 1
 
-        if score > 0:
-            resultados.append({
-                "nombre": lugar.get("nombre"),
-                "tipo": lugar.get("tipo"),
-                "subtipo": lugar.get("subtipo"),
-                "descripcion": lugar.get("descripcion"),
-                "fuente": lugar.get("fuente"),
-                "score": score
-            })
-
-    resultados = sorted(resultados, key=lambda x: x["score"], reverse=True)
-
-    return {
-        "query": q,
-        "cantidad_resultados": len(resultados),
-        "resultados": resultados[:limite]
-    }
 
 
 
