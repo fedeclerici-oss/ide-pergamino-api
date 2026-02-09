@@ -1,57 +1,36 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 import requests
 from geopy.distance import geodesic
 
-app = FastAPI(
-    title="IDE Pergamino API",
-    version="1.0"
-)
+app = FastAPI(title="IDE Pergamino API")
 
-# =========================
-# CONFIG
-# =========================
+DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/download/v1-data/ide_normalizado.json"
 
-DATA_URL = (
-    "https://github.com/fedeclerici-oss/"
-    "ide-pergamino-api/releases/download/"
-    "v1-data/ide_normalizado.json"
-)
-
-DATA = []
 FEATURES = []
 
-# =========================
-# CARGA DE DATOS REMOTOS
-# =========================
 
 def cargar_datos_remotos():
-    global DATA, FEATURES
-
+    global FEATURES
     print("⬇️ Descargando ide_normalizado.json...")
+
     r = requests.get(DATA_URL, timeout=60)
     r.raise_for_status()
+    data = r.json()
 
-    DATA = r.json()
-    FEATURES = DATA.get("features", [])
+    # 🧠 SOPORTA LISTA O FEATURECOLLECTION
+    if isinstance(data, list):
+        FEATURES = data
+    elif isinstance(data, dict):
+        FEATURES = data.get("features", [])
+    else:
+        FEATURES = []
 
     print(f"✅ Datos cargados: {len(FEATURES)} features")
 
 
+# 🔥 se carga una sola vez al iniciar
 cargar_datos_remotos()
 
-# =========================
-# HELPERS
-# =========================
-
-def contiene_texto(feature, texto):
-    texto = texto.lower()
-    props = feature.get("properties", {})
-    return any(texto in str(v).lower() for v in props.values())
-
-
-# =========================
-# ENDPOINTS
-# =========================
 
 @app.get("/")
 def root():
@@ -62,42 +41,55 @@ def root():
 
 
 @app.get("/buscar_texto")
-def buscar_texto(q: str, limit: int = 20):
+def buscar_texto(q: str = Query(..., min_length=2)):
+    q = q.lower()
     resultados = []
 
     for f in FEATURES:
-        if contiene_texto(f, q):
+        props = f.get("properties", {})
+        texto = " ".join(str(v).lower() for v in props.values())
+
+        if q in texto:
             resultados.append(f)
 
-    return resultados[:limit]
+    return {
+        "query": q,
+        "total": len(resultados),
+        "resultados": resultados[:50]
+    }
 
 
 @app.get("/buscar_cerca")
 def buscar_cerca(
     lat: float,
     lon: float,
-    radio_km: float = 1.0,
-    limit: int = 20
+    radio_m: float = 500
 ):
-    encontrados = []
+    centro = (lat, lon)
+    resultados = []
 
     for f in FEATURES:
         geom = f.get("geometry", {})
         if geom.get("type") != "Point":
             continue
 
-        lon_f, lat_f = geom["coordinates"]
-
-        try:
-            d = geodesic((lat, lon), (lat_f, lon_f)).km
-        except Exception:
+        coords = geom.get("coordinates", [])
+        if len(coords) != 2:
             continue
 
-        if d <= radio_km:
-            f_out = f.copy()
-            f_out["distancia_km"] = round(d, 3)
-            encontrados.append(f_out)
+        punto = (coords[1], coords[0])
+        dist = geodesic(centro, punto).meters
 
-    encontrados.sort(key=lambda x: x["distancia_km"])
-    return encontrados[:limit]
+        if dist <= radio_m:
+            f_copy = f.copy()
+            f_copy["distance_m"] = round(dist, 2)
+            resultados.append(f_copy)
+
+    return {
+        "lat": lat,
+        "lon": lon,
+        "radio_m": radio_m,
+        "total": len(resultados),
+        "resultados": sorted(resultados, key=lambda x: x["distance]()
+
 
