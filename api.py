@@ -1,21 +1,30 @@
+import os
+import json
+import requests
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-import json
-import os
-import requests
-import math
 
-# ================= CONFIG =================
+# =========================
+# CONFIG
+# =========================
 
-DRIVE_FILE_ID = "1PJvXqycmcOlld23pusWBbx3M4yEuE_To"
 DATA_DIR = "data"
-DATA_PATH = f"{DATA_DIR}/lugares.geojson"
+DATA_PATH = os.path.join(DATA_DIR, "lugares.geojson")
 
-# =========================================
+# Link DIRECTO de descarga desde Drive (MUY IMPORTANTE)
+DRIVE_DOWNLOAD_URL = (
+    "https://drive.google.com/uc?export=download&id=1PJvXqycmcOlld23pusWBbx3M4yEuE_To"
+)
+
+lugares = []
+
+# =========================
+# APP
+# =========================
 
 app = FastAPI(
     title="IDE Pergamino API",
-    description="Búsqueda de lugares y contexto urbano",
+    description="Búsqueda flexible de lugares (texto + contexto)",
     version="1.0"
 )
 
@@ -26,109 +35,120 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-lugares = []
-
-# ---------- DRIVE DOWNLOAD ----------
+# =========================
+# UTILIDADES
+# =========================
 
 def descargar_desde_drive():
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-    session = requests.Session()
-    url = "https://docs.google.com/uc?export=download"
-    response = session.get(url, params={"id": DRIVE_FILE_ID}, stream=True)
-
-    token = None
-    for key, value in response.cookies.items():
-        if key.startswith("download_warning"):
-            token = value
-
-    params = {"id": DRIVE_FILE_ID}
-    if token:
-        params["confirm"] = token
-
-    response = session.get(url, params=params, stream=True)
+    response = requests.get(DRIVE_DOWNLOAD_URL, timeout=120)
     response.raise_for_status()
 
     with open(DATA_PATH, "wb") as f:
-        for chunk in response.iter_content(1024 * 1024):
-            if chunk:
-                f.write(chunk)
+        f.write(response.content)
 
-# ---------- UTILS ----------
+def normalizar(texto: str) -> str:
+    return texto.lower().strip()
 
-def distancia(lat1, lon1, lat2, lon2):
-    return math.sqrt((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2)
-
-# ---------- STARTUP ----------
+# =========================
+# STARTUP
+# =========================
 
 @app.on_event("startup")
 def cargar_datos():
     global lugares
 
-    if not os.path.exists(DATA_PATH):
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    necesita_descarga = True
+
+    if os.path.exists(DATA_PATH):
+        size = os.path.getsize(DATA_PATH)
+        print(f"📦 Archivo existente: {size} bytes")
+        if size > 10_000:
+            necesita_descarga = False
+        else:
+            print("⚠️ Archivo muy chico, se vuelve a descargar")
+
+    if necesita_descarga:
         print("⬇️ Descargando GeoJSON desde Google Drive...")
         descargar_desde_drive()
 
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        with open(DATA_PATH, "rb") as f:
+            inicio = f.read(200)
+        raise RuntimeError(
+            f"❌ Error leyendo GeoJSON.\n"
+            f"Primeros bytes del archivo:\n{inicio}"
+        ) from e
 
     lugares = data.get("features", [])
-    print(f"✅ Lugares cargados: {len(lugares)}")
+    print(f"✅ Lugares cargados correctamente: {len(lugares)}")
 
-# ---------- ENDPOINTS ----------
+# =========================
+# ENDPOINTS
+# =========================
 
 @app.get("/")
-def home():
+def root():
     return {
         "status": "ok",
-        "total_lugares": len(lugares)
+        "lugares_cargados": len(lugares)
+    }
+
+@app.get("/debug")
+def debug():
+    return {
+        "tipo": str(type(lugares)),
+        "cantidad": len(lugares),
+        "ejemplo": lugares[0]["properties"] if lugares else None
     }
 
 @app.get("/buscar")
 def buscar(
-    q: str = Query(..., description="Texto libre"),
-    lat: float | None = None,
-    lon: float | None = None,
+    q: str = Query(..., description="Texto a buscar"),
+    limit: int = 10
 ):
-    q = q.lower()
-    resultados = []
+    """
+    Búsqueda flexible:
+    - primero exacta
+    - si no hay, busca por contexto
+    """
+
+    q_norm = normalizar(q)
+    resultados_exactos = []
+    resultados_contexto = []
 
     for f in lugares:
         props = f.get("properties", {})
+        nombre = normalizar(props.get("nombre", ""))
+        descripcion = normalizar(props.get("descripcion", "") or "")
+        tipo = normalizar(props.get("tipo", "") or "")
+        subtipo = normalizar(props.get("subtipo", "") or "")
 
-        nombre = str(props.get("nombre", "")).lower()
-        tipo = str(props.get("tipo", "")).lower()
+        texto_completo = f"{nombre} {descripcion} {tipo} {subtipo}"
 
-        if q in nombre or q in tipo:
-            item = {
-                "id": props.get("id"),
-                "nombre": props.get("nombre"),
-                "tipo": props.get("tipo"),
-                "lat": props.get("lat"),
-                "lon": props.get("lon"),
-            }
+        if q_norm in nombre:
+            resultados_exactos.append(f)
+        elif q_norm in texto_completo:
+            resultados_contexto.append(f)
 
-            if lat and lon and props.get("lat") and props.get("lon"):
-                item["distancia"] = distancia(
-                    lat, lon, props["lat"], props["lon"]
-                )
-
-            resultados.append(item)
-
-    if not resultados:
-        return {
-            "mensaje": "No hay coincidencia exacta",
-            "sugerencia": "Se puede responder por contexto"
-        }
-
-    return resultados[:10]
-
-@app.get("/debug")
-def debug():
-    if not lugares:
-        return {"error": "No hay datos"}
+    resultados = resultados_exactos or resultados_contexto
 
     return {
-        "cantidad": len(lugares),
-        "ejemplo": lugares[0].get("properties", {})
+        "query": q,
+        "total_exactos": len(resultados_exactos),
+        "total_contexto": len(resultados_contexto),
+        "devueltos": len(resultados[:limit]),
+        "resultados": resultados[:limit]
     }
+
+# =========================
+# PARA EJECUTAR LOCAL
+# =========================
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
