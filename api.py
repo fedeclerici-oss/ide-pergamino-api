@@ -15,7 +15,7 @@ DATA_PATH = f"{DATA_DIR}/lugares.geojson"
 
 app = FastAPI(
     title="IDE Pergamino API",
-    description="Búsqueda de lugares, escuelas y contexto urbano",
+    description="Búsqueda de lugares y contexto urbano",
     version="1.0"
 )
 
@@ -28,23 +28,38 @@ app.add_middleware(
 
 lugares = []
 
-# ---------- UTILIDADES ----------
+# ---------- DRIVE DOWNLOAD ----------
 
 def descargar_desde_drive():
     os.makedirs(DATA_DIR, exist_ok=True)
-    url = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
-    r = requests.get(url, stream=True)
-    r.raise_for_status()
+
+    session = requests.Session()
+    url = "https://docs.google.com/uc?export=download"
+    response = session.get(url, params={"id": DRIVE_FILE_ID}, stream=True)
+
+    token = None
+    for key, value in response.cookies.items():
+        if key.startswith("download_warning"):
+            token = value
+
+    params = {"id": DRIVE_FILE_ID}
+    if token:
+        params["confirm"] = token
+
+    response = session.get(url, params=params, stream=True)
+    response.raise_for_status()
 
     with open(DATA_PATH, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1024 * 1024):
+        for chunk in response.iter_content(1024 * 1024):
             if chunk:
                 f.write(chunk)
+
+# ---------- UTILS ----------
 
 def distancia(lat1, lon1, lat2, lon2):
     return math.sqrt((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2)
 
-# ---------- CARGA INICIAL ----------
+# ---------- STARTUP ----------
 
 @app.on_event("startup")
 def cargar_datos():
@@ -58,7 +73,7 @@ def cargar_datos():
         data = json.load(f)
 
     lugares = data.get("features", [])
-    print(f"✅ Lugares cargados en memoria: {len(lugares)}")
+    print(f"✅ Lugares cargados: {len(lugares)}")
 
 # ---------- ENDPOINTS ----------
 
@@ -71,7 +86,7 @@ def home():
 
 @app.get("/buscar")
 def buscar(
-    q: str = Query(..., description="Texto libre: escuela, plaza, calle"),
+    q: str = Query(..., description="Texto libre"),
     lat: float | None = None,
     lon: float | None = None,
 ):
@@ -91,7 +106,6 @@ def buscar(
                 "tipo": props.get("tipo"),
                 "lat": props.get("lat"),
                 "lon": props.get("lon"),
-                "fuente": props.get("fuente"),
             }
 
             if lat and lon and props.get("lat") and props.get("lon"):
@@ -103,26 +117,18 @@ def buscar(
 
     if not resultados:
         return {
-            "mensaje": "No se encontró coincidencia exacta",
-            "sugerencia": "Probá con otros términos (ej: escuela, plaza, calle)"
+            "mensaje": "No hay coincidencia exacta",
+            "sugerencia": "Se puede responder por contexto"
         }
 
-    resultados = sorted(resultados, key=lambda x: x.get("distancia", 0))
     return resultados[:10]
 
 @app.get("/debug")
 def debug():
     if not lugares:
-        return {"error": "No hay datos cargados"}
+        return {"error": "No hay datos"}
 
-    ejemplo = lugares[0].get("properties", {})
     return {
-        "tipo": str(type(lugares)),
         "cantidad": len(lugares),
-        "ejemplo": ejemplo
+        "ejemplo": lugares[0].get("properties", {})
     }
-
-
-
-
-
