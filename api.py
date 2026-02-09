@@ -13,9 +13,7 @@ DATA_PATH = os.path.join(DATA_DIR, "lugares_v2.geojson")
 
 
 # Link DIRECTO de descarga desde Drive (MUY IMPORTANTE)
-DRIVE_DOWNLOAD_URL = (
-    "https://drive.google.com/uc?export=download&id=1PJvXqycmcOlld23pusWBbx3M4yEuE_To"
-)
+DRIVE_URL = "https://drive.google.com/uc?export=download&id=1PJvXqycmcOlld23pusWBbx3M4yEuE_To"
 
 lugares = []
 
@@ -153,4 +151,5 @@ def buscar(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+
 
