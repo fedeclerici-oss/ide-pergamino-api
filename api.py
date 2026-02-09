@@ -1,6 +1,4 @@
 from fastapi import FastAPI
-import json
-import os
 import requests
 from geopy.distance import geodesic
 
@@ -9,26 +7,51 @@ app = FastAPI(
     version="1.0"
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_FILE = os.path.join(BASE_DIR, "ide_normalizado.json")
+# =========================
+# CONFIG
+# =========================
 
-DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/download/v1-data/ide_normalizado.json"
+DATA_URL = (
+    "https://github.com/fedeclerici-oss/"
+    "ide-pergamino-api/releases/download/"
+    "v1-data/ide_normalizado.json"
+)
+
+DATA = []
+FEATURES = []
+
+# =========================
+# CARGA DE DATOS REMOTOS
+# =========================
+
+def cargar_datos_remotos():
+    global DATA, FEATURES
+
+    print("⬇️ Descargando ide_normalizado.json...")
+    r = requests.get(DATA_URL, timeout=60)
+    r.raise_for_status()
+
+    DATA = r.json()
+    FEATURES = DATA.get("features", [])
+
+    print(f"✅ Datos cargados: {len(FEATURES)} features")
 
 
-def cargar_datos():
-    if not os.path.exists(DATA_FILE):
-        r = requests.get(DATA_URL)
-        r.raise_for_status()
-        with open(DATA_FILE, "wb") as f:
-            f.write(r.content)
+cargar_datos_remotos()
 
-    with open(DATA_FILE, encoding="utf-8") as f:
-        return json.load(f)
+# =========================
+# HELPERS
+# =========================
+
+def contiene_texto(feature, texto):
+    texto = texto.lower()
+    props = feature.get("properties", {})
+    return any(texto in str(v).lower() for v in props.values())
 
 
-DATA = cargar_datos()
-FEATURES = DATA.get("features", [])
-
+# =========================
+# ENDPOINTS
+# =========================
 
 @app.get("/")
 def root():
@@ -40,12 +63,10 @@ def root():
 
 @app.get("/buscar_texto")
 def buscar_texto(q: str, limit: int = 20):
-    q = q.lower()
     resultados = []
 
     for f in FEATURES:
-        props = f.get("properties", {})
-        if any(q in str(v).lower() for v in props.values()):
+        if contiene_texto(f, q):
             resultados.append(f)
 
     return resultados[:limit]
@@ -66,11 +87,16 @@ def buscar_cerca(
             continue
 
         lon_f, lat_f = geom["coordinates"]
-        d = geodesic((lat, lon), (lat_f, lon_f)).km
+
+        try:
+            d = geodesic((lat, lon), (lat_f, lon_f)).km
+        except Exception:
+            continue
 
         if d <= radio_km:
-            f["distancia_km"] = round(d, 3)
-            encontrados.append(f)
+            f_out = f.copy()
+            f_out["distancia_km"] = round(d, 3)
+            encontrados.append(f_out)
 
     encontrados.sort(key=lambda x: x["distancia_km"])
     return encontrados[:limit]
