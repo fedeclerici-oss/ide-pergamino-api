@@ -11,13 +11,12 @@ FEATURES = []
 
 def cargar_datos_remotos():
     global FEATURES
-    print("⬇️ Descargando ide_normalizado.json...")
+    print("Descargando ide_normalizado.json")
 
-    r = requests.get(DATA_URL, timeout=60)
-    r.raise_for_status()
-    data = r.json()
+    response = requests.get(DATA_URL, timeout=60)
+    response.raise_for_status()
+    data = response.json()
 
-    # 🧠 SOPORTA LISTA O FEATURECOLLECTION
     if isinstance(data, list):
         FEATURES = data
     elif isinstance(data, dict):
@@ -25,10 +24,9 @@ def cargar_datos_remotos():
     else:
         FEATURES = []
 
-    print(f"✅ Datos cargados: {len(FEATURES)} features")
+    print("Datos cargados:", len(FEATURES))
 
 
-# 🔥 se carga una sola vez al iniciar
 cargar_datos_remotos()
 
 
@@ -47,7 +45,7 @@ def buscar_texto(q: str = Query(..., min_length=2)):
 
     for f in FEATURES:
         props = f.get("properties", {})
-        texto = " ".join(str(v).lower() for v in props.values())
+        texto = " ".join([str(v).lower() for v in props.values()])
 
         if q in texto:
             resultados.append(f)
@@ -78,18 +76,11 @@ def buscar_cerca(
             continue
 
         punto = (coords[1], coords[0])
-        dist = geodesic(centro, punto).meters
+        distancia = geodesic(centro, punto).meters
 
-        if dist <= radio_m:
-            f_copy = f.copy()
-            f_copy["distance_m"] = round(dist, 2)
-            resultados.append(f_copy)
+        if distancia <= radio_m:
+            item = f.copy()
+            ite
 
-    return {
-        "lat": lat,
-        "lon": lon,
-        "radio_m": radio_m,
-        "total": len(resultados),
-        "resultados": sorted(resultados, key=lambda x: x["distance]()
 
 
