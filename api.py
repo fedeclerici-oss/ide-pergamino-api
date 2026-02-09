@@ -1,145 +1,112 @@
 from fastapi import FastAPI, Query
-import requests
-import math
+from typing import List, Optional
+import json
+import os
 
 app = FastAPI(
     title="IDE Pergamino API",
-    description="API de consulta geográfica IDE Pergamino",
-    version="1.0"
+    description="API contextual para consultas territoriales",
+    version="1.0.0"
 )
 
 # =========================
-# CONFIG
+# CARGA DE DATOS
 # =========================
 
-DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/download/v1-data/ide_normalizado.json"
+DATA_PATH = "data/lugares.geojson"  # ajustá si el path es otro
 
-LUGARES = []
+with open(DATA_PATH, "r", encoding="utf-8") as f:
+    geojson = json.load(f)
 
-
-# =========================
-# UTILIDADES
-# =========================
-
-def distancia_m(lat1, lon1, lat2, lon2):
-    """
-    Distancia aproximada en metros (Haversine)
-    """
-    R = 6371000  # radio tierra en metros
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-
-    a = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    )
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def cargar_datos_remotos():
-    global LUGARES
-    print("⬇️ Descargando ide_normalizado.json...")
-
-    r = requests.get(DATA_URL)
-    r.raise_for_status()
-
-    data = r.json()
-
-    if isinstance(data, list):
-        LUGARES = data
-    else:
-        LUGARES = data.get("features", [])
-
-    print(f"✅ Lugares cargados: {len(LUGARES)}")
-
+LUGARES = [feature["properties"] for feature in geojson["features"]]
 
 # =========================
-# STARTUP
+# FILTRO DE TIPOS ÚTILES
 # =========================
 
-cargar_datos_remotos()
+TIPOS_UTILES = [
+    "escuela",
+    "educacion",
+    "salud",
+    "hospital",
+    "plaza",
+    "espacio",
+    "obra",
+    "municipal",
+    "centro",
+    "policia",
+    "bomberos"
+]
 
+def es_lugar_util(lugar: dict) -> bool:
+    texto = " ".join([
+        str(lugar.get("nombre", "")),
+        str(lugar.get("tipo", "")),
+        str(lugar.get("subtipo", "")),
+        str(lugar.get("descripcion", "")),
+        str(lugar.get("capa_origen", ""))
+    ]).lower()
+
+    return any(t in texto for t in TIPOS_UTILES)
+
+LUGARES_UTILES = [l for l in LUGARES if es_lugar_util(l)]
 
 # =========================
-# ENDPOINTS
+# ENDPOINT BASE
 # =========================
 
 @app.get("/")
-def root():
+def home():
     return {
-        "status": "ok",
-        "lugares_cargados": len(LUGARES)
+        "estado": "ok",
+        "lugares_totales": len(LUGARES),
+        "lugares_utiles": len(LUGARES_UTILES)
     }
 
+# =========================
+# NUEVO ENDPOINT CONTEXTUAL
+# =========================
 
-@app.get("/debug/lugares")
-def debug_lugares():
-    return {
-        "tipo": str(type(LUGARES)),
-        "cantidad": len(LUGARES),
-        "ejemplo": LUGARES[0] if LUGARES else None
-    }
-
-
-@app.get("/buscar_texto")
-def buscar_texto(
-    q: str = Query(..., description="Texto a buscar, ej: escuela, plaza")
+@app.get("/buscar_contexto")
+def buscar_contexto(
+    q: str = Query(..., description="Texto libre: barrio, calle, lugar, institución"),
+    limite: int = 10
 ):
-    texto = q.lower()
+    q = q.lower().strip()
     resultados = []
 
-    for l in LUGARES:
-        blob = " ".join([
-            str(l.get("nombre", "")),
-            str(l.get("tipo", "")),
-            str(l.get("categoria", "")),
-            str(l.get("descripcion", ""))
-        ]).lower()
+    for lugar in LUGARES_UTILES:
+        score = 0
 
-        if texto in blob:
-            resultados.append(l)
+        campos = {
+            "nombre": lugar.get("nombre"),
+            "tipo": lugar.get("tipo"),
+            "subtipo": lugar.get("subtipo"),
+            "descripcion": lugar.get("descripcion"),
+            "capa_origen": lugar.get("capa_origen")
+        }
+
+        for valor in campos.values():
+            if valor and q in str(valor).lower():
+                score += 1
+
+        if score > 0:
+            resultados.append({
+                "nombre": lugar.get("nombre"),
+                "tipo": lugar.get("tipo"),
+                "subtipo": lugar.get("subtipo"),
+                "descripcion": lugar.get("descripcion"),
+                "fuente": lugar.get("fuente"),
+                "score": score
+            })
+
+    resultados = sorted(resultados, key=lambda x: x["score"], reverse=True)
 
     return {
         "query": q,
-        "resultados": len(resultados),
-        "lugares": resultados[:50]  # límite
+        "cantidad_resultados": len(resultados),
+        "resultados": resultados[:limite]
     }
-
-
-@app.get("/buscar_cerca")
-def buscar_cerca(
-    lat: float,
-    lon: float,
-    radio_m: int = 300
-):
-    encontrados = []
-
-    for l in LUGARES:
-        lat2 = l.get("lat")
-        lon2 = l.get("lon")
-
-        if lat2 is None or lon2 is None:
-            continue
-
-        d = distancia_m(lat, lon, lat2, lon2)
-
-        if d <= radio_m:
-            l2 = l.copy()
-            l2["distancia_m"] = round(d, 1)
-            encontrados.append(l2)
-
-    encontrados.sort(key=lambda x: x["distancia_m"])
-
-    return {
-        "lat": lat,
-        "lon": lon,
-        "radio_m": radio_m,
-        "resultados": len(encontrados),
-        "lugares": encontrados[:50]
-    }
-
 
 
 
