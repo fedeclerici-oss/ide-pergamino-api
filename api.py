@@ -1,141 +1,151 @@
 from fastapi import FastAPI, Query
 import json
+import math
 import requests
-import unicodedata
-from pathlib import Path
-from math import radians, cos, sin, asin, sqrt
-from pyproj import Transformer
+from typing import Optional
 
-app = FastAPI(title="IDE Pergamino API")
+app = FastAPI(
+    title="IDE Pergamino API",
+    description="Búsqueda contextual de lugares, calles y servicios",
+    version="1.0.0",
+)
 
-DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/download/v1.0.0/ide_normalizado.json"
-DATA_PATH = Path("data.json")
+# =========================
+# CONFIG
+# =========================
 
-DATA = []
-INDEX = []
+GEOJSON_URL = (
+    "https://github.com/fedeclerici-oss/ide-pergamino-api/"
+    "releases/download/v1.0.0/ide_normalizado.json"
+)
 
-# POSGAR / Gauss Kruger → WGS84
-transformer = Transformer.from_crs("EPSG:22185", "EPSG:4326", always_xy=True)
-
-INTENCIONES = {
-    "escuela": ["escuela", "colegio", "educacion", "jardin"],
-    "salud": ["hospital", "salita", "caps"],
-    "espacio_verde": ["plaza", "parque"],
-    "calle": ["calle", "avenida"]
-}
+lugares = []
 
 
-def normalizar(txt: str) -> str:
-    if not txt:
-        return ""
-    txt = unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode("utf-8")
-    return txt.lower()
-
-
-def detectar_intencion(q: str):
-    for tipo, palabras in INTENCIONES.items():
-        for p in palabras:
-            if p in q:
-                return tipo
-    return None
-
+# =========================
+# UTILIDADES
+# =========================
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371  # km
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-    return 2 * R * asin(sqrt(a))
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
 
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    )
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def normalizar(texto: str) -> str:
+    return texto.lower().strip()
+
+
+# =========================
+# STARTUP
+# =========================
 
 @app.on_event("startup")
 def cargar_datos():
-    global DATA, INDEX
+    global lugares
+    print("⬇️ Descargando GeoJSON desde GitHub Release...")
 
-    if not DATA_PATH.exists():
-        r = requests.get(DATA_URL, timeout=60)
-        r.raise_for_status()
-        DATA_PATH.write_bytes(r.content)
+    resp = requests.get(GEOJSON_URL, timeout=60)
+    resp.raise_for_status()
 
-    DATA = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    data = resp.json()
 
-    INDEX = []
+    if "features" not in data:
+        raise RuntimeError("❌ El archivo no es un GeoJSON válido")
 
-    for item in DATA:
-        lat_p = item.get("lat")
-        lon_p = item.get("lon")
+    lugares = []
 
-        if lat_p and lon_p:
-            lon_w, lat_w = transformer.transform(lon_p, lat_p)
-        else:
-            lat_w = lon_w = None
+    for f in data["features"]:
+        props = f.get("properties", {})
+        geom = f.get("geometry", {})
 
-        texto = " ".join([
-            item.get("nombre", ""),
-            item.get("descripcion", ""),
-            item.get("tipo", ""),
-            item.get("subtipo", ""),
-            item.get("capa_origen", "")
-        ])
+        if not geom or "coordinates" not in geom:
+            continue
 
-        INDEX.append({
-            "raw": item,
-            "texto": normalizar(texto),
-            "tipo": normalizar(item.get("tipo", "")),
-            "lat": lat_w,
-            "lon": lon_w
+        lon, lat = geom["coordinates"]
+
+        lugares.append({
+            "id": props.get("id"),
+            "tipo": props.get("tipo"),
+            "subtipo": props.get("subtipo"),
+            "nombre": props.get("nombre"),
+            "descripcion": props.get("descripcion"),
+            "lat": lat,
+            "lon": lon,
+            "fuente": props.get("fuente"),
+            "capa_origen": props.get("capa_origen"),
         })
 
-    print(f"✅ Cargados {len(INDEX)} registros con coordenadas reales")
+    print(f"✅ Datos cargados: {len(lugares)} registros")
+
+
+# =========================
+# ENDPOINTS
+# =========================
+
+@app.get("/")
+def home():
+    return {
+        "status": "ok",
+        "lugares_cargados": len(lugares)
+    }
 
 
 @app.get("/buscar")
 def buscar(
-    q: str = Query(...),
-    lat: float | None = None,
-    lon: float | None = None,
+    q: str = Query(..., description="Texto a buscar"),
     limit: int = 10
 ):
     qn = normalizar(q)
-    intencion = detectar_intencion(qn)
 
-    resultados = []
-
-    for item in INDEX:
-        score = 0
-
-        if qn in item["texto"]:
-            score += 3
-
-        if intencion and intencion in item["texto"]:
-            score += 2
-
-        distancia = None
-        if lat and lon and item["lat"] and item["lon"]:
-            distancia = haversine(lat, lon, item["lat"], item["lon"])
-            score += max(0, 5 - distancia)  # más cerca = más score
-
-        if score > 0:
-            resultados.append({
-                "score": score,
-                "distancia_km": round(distancia, 2) if distancia else None,
-                "data": item["raw"]
-            })
-
-    resultados.sort(key=lambda x: (x["distancia_km"] is not None, -x["score"], x["distancia_km"] or 999))
-
-    if not resultados:
-        return {
-            "query": q,
-            "mensaje": "Sin coincidencias claras, resultados generales",
-            "resultados": DATA[:limit]
-        }
+    resultados = [
+        l for l in lugares
+        if l["nombre"] and qn in normalizar(l["nombre"])
+    ]
 
     return {
-        "query": q,
-        "intencion": intencion,
-        "total": len(resultados),
+        "cantidad": len(resultados),
         "resultados": resultados[:limit]
     }
 
+
+@app.get("/buscar_contexto")
+def buscar_contexto(
+    q: str = Query(..., description="Texto a buscar"),
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    limit: int = 5
+):
+    qn = normalizar(q)
+
+    candidatos = [
+        l for l in lugares
+        if l["nombre"] and qn in normalizar(l["nombre"])
+    ]
+
+    # Si hay coordenadas, ordenamos por cercanía real
+    if lat is not None and lon is not None:
+        for l in candidatos:
+            l["distancia_km"] = haversine(
+                lat, lon, l["lat"], l["lon"]
+            )
+
+        candidatos.sort(key=lambda x: x["distancia_km"])
+    else:
+        # Si no hay coords → igual respondemos
+        for l in candidatos:
+            l["distancia_km"] = None
+
+    return {
+        "cantidad": len(candidatos),
+        "resultados": candidatos[:limit]
+    }
 
