@@ -83,13 +83,48 @@ def cargar_datos():
 # INTERPRETAR
 # =========================
 def interpretar(pregunta: str):
-    p = pregunta.lower()
+    p = pregunta.lower().strip()
+
     categorias = {
         "escuela": ["escuela", "colegio", "primaria", "secundaria"],
-        "hospital": ["hospital", "clinica", "caps", "salita"],
+        "hospital": ["hospital", "clinica", "caps", "salita", "sanatorio"],
         "plaza": ["plaza", "parque"],
-        "calle": ["calle", "avenida", "av"],
+        "calle": ["calle", "avenida", "av", "bulevar"]
     }
+
+    palabras_cercania = [
+        "cerca", "cercano", "cercana",
+        "por aca", "por acá", "alrededor",
+        "mas cerca", "más cerca",
+        "cerca mio", "cerca mío"
+    ]
+
+    palabras_lista = [
+        "todos", "todas", "lista",
+        "ver", "mostrar", "hay",
+        "existen", "conozco"
+    ]
+
+    categoria = None
+    for c, palabras in categorias.items():
+        if any(w in p for w in palabras):
+            categoria = c
+            break
+
+    quiere_cercania = any(w in p for w in palabras_cercania)
+
+    quiere_lista = any(w in p for w in palabras_lista)
+
+    # si pregunta algo corto tipo "escuelas", "hospitales"
+    if len(p.split()) <= 2 and categoria:
+        quiere_lista = True
+
+    return {
+        "categoria": categoria,
+        "quiere_cercania": quiere_cercania,
+        "quiere_lista": quiere_lista
+    }
+
 
     categoria = None
     for c, palabras in categorias.items():
@@ -170,5 +205,6 @@ def health():
         "lugares": len(lugares),
         "sesiones": len(memoria),
     }
+
 
 
