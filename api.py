@@ -1,75 +1,64 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Query
 import requests
 import json
-import os
 
 app = FastAPI(title="IDE Pergamino API")
 
-# =========================
-# Config
-# =========================
-GEOJSON_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/download/v1.0.0/ide_normalizado.json"
-LOCAL_FILE = "data.json"
+DATA_URL = (
+    "https://github.com/fedeclerici-oss/ide-pergamino-api/"
+    "releases/download/v1.0.0/ide_normalizado.json"
+)
 
-data_cache = None
+datos = []
 
 
-# =========================
-# Startup
-# =========================
 @app.on_event("startup")
 def cargar_datos():
-    global data_cache
+    global datos
+    print("⬇️ Descargando JSON desde GitHub Releases...")
+
+    r = requests.get(DATA_URL, timeout=60)
+    r.raise_for_status()
 
     try:
-        print("⬇️ Descargando JSON desde GitHub Releases...")
-        r = requests.get(GEOJSON_URL, timeout=60)
-        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        primeros = r.content[:200]
+        raise RuntimeError(
+            "❌ El archivo descargado NO es JSON.\n"
+            f"Primeros bytes:\n{primeros}"
+        )
 
-        # 🔴 Protección clave: GitHub ok, pero por las dudas
-        if r.text.lstrip().startswith("<!DOCTYPE html"):
-            raise RuntimeError("El archivo descargado es HTML, no JSON")
+    if not isinstance(data, list):
+        raise RuntimeError("❌ El JSON no es una lista")
 
-        with open(LOCAL_FILE, "wb") as f:
-            f.write(r.content)
-
-        with open(LOCAL_FILE, "r", encoding="utf-8") as f:
-            data_cache = json.load(f)
-
-        print("✅ JSON cargado correctamente")
-
-    except Exception as e:
-        print("❌ Error leyendo JSON")
-        raise RuntimeError(f"Error cargando datos: {e}")
+    datos = data
+    print(f"✅ JSON cargado: {len(datos)} registros")
 
 
-# =========================
-# Endpoints
-# =========================
-@app.get("/")
-def root():
+@app.get("/health")
+def health():
     return {
         "status": "ok",
-        "features": len(data_cache.get("features", [])) if data_cache else 0
+        "registros": len(datos)
     }
 
 
-@app.get("/features")
-def get_features(limit: int = 100):
-    if not data_cache:
-        raise HTTPException(status_code=500, detail="Datos no cargados")
+@app.get("/buscar")
+def buscar(q: str = Query(..., min_length=2)):
+    q = q.lower()
 
-    return data_cache.get("features", [])[:limit]
+    resultados = [
+        d for d in datos
+        if q in (d.get("nombre") or "").lower()
+        or q in (d.get("descripcion") or "").lower()
+    ]
 
-
-@app.get("/feature/{index}")
-def get_feature(index: int):
-    features = data_cache.get("features", [])
-
-    if index < 0 or index >= len(features):
-        raise HTTPException(status_code=404, detail="Índice fuera de rango")
-
-    return features[index]
+    return {
+        "query": q,
+        "cantidad": len(resultados),
+        "resultados": resultados[:20]
+    }
 
 
 
