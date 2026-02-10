@@ -7,7 +7,7 @@ import os
 import requests
 import time
 
-app = FastAPI(title="IDE Pergamino API")
+app = FastAPI(title="IDE Pergamino BOT API")
 
 # =========================
 # CORS
@@ -48,11 +48,11 @@ def distancia_metros(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def texto_match(lugar, q):
-    q = q.lower()
+def texto_match(lugar, texto):
+    t = texto.lower()
     for campo in ["nombre", "tipo", "subtipo", "descripcion", "capa_origen"]:
-        valor = lugar.get(campo)
-        if valor and q in str(valor).lower():
+        v = lugar.get(campo)
+        if v and t in str(v).lower():
             return True
     return False
 
@@ -71,7 +71,7 @@ def cargar_datos():
     global lugares
 
     if not os.path.exists(DATA_PATH):
-        r = requests.get(DATA_URL, timeout=60)
+        r = requests.get(DATA_URL, timeout=120)
         r.raise_for_status()
         with open(DATA_PATH, "wb") as f:
             f.write(r.content)
@@ -79,8 +79,14 @@ def cargar_datos():
     with open(DATA_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    lugares = data if isinstance(data, list) else data.get("features", [])
-    print(f"✅ {len(lugares)} lugares cargados")
+    if isinstance(data, list):
+        lugares = data
+    elif isinstance(data, dict) and "features" in data:
+        lugares = data["features"]
+    else:
+        lugares = []
+
+    print(f"✅ Lugares cargados: {len(lugares)}")
 
 # =========================
 # INTERPRETACIÓN HUMANA
@@ -92,16 +98,18 @@ def interpretar(pregunta: str):
         "escuela": ["escuela", "colegio", "primaria", "secundaria"],
         "hospital": ["hospital", "clinica", "sanatorio", "caps", "salita"],
         "plaza": ["plaza", "parque"],
+        "calle": ["calle", "avenida", "av", "bulevar"],
     }
 
-    cercania = [
-        "cerca", "más cerca", "mas cerca", "cercano",
+    palabras_cercania = [
+        "cerca", "cercano", "cercana",
         "por aca", "por acá", "alrededor",
+        "más cerca", "mas cerca"
     ]
 
-    siguiente = [
-        "otro", "otra", "siguiente", "más",
-        "otro más", "otra opción",
+    palabras_lista = [
+        "todos", "todas", "lista", "ver",
+        "mostrar", "hay", "existen"
     ]
 
     categoria = None
@@ -110,10 +118,17 @@ def interpretar(pregunta: str):
             categoria = c
             break
 
+    quiere_cercania = any(w in p for w in palabras_cercania)
+    quiere_lista = any(w in p for w in palabras_lista)
+
+    # preguntas cortas tipo "escuelas"
+    if categoria and len(p.split()) <= 2:
+        quiere_lista = True
+
     return {
         "categoria": categoria,
-        "quiere_cercania": any(w in p for w in cercania),
-        "quiere_siguiente": any(w in p for w in siguiente),
+        "quiere_cercania": quiere_cercania,
+        "quiere_lista": quiere_lista,
     }
 
 # =========================
@@ -128,10 +143,10 @@ def bot(
 ):
     limpiar_memoria()
 
-    info = interpretar(pregunta)
+    intent = interpretar(pregunta)
     mem = memoria.get(session_id, {})
 
-    categoria = info["categoria"] or mem.get("categoria")
+    categoria = intent["categoria"] or mem.get("categoria")
     lat = lat if lat is not None else mem.get("lat")
     lon = lon if lon is not None else mem.get("lon")
 
@@ -141,6 +156,13 @@ def bot(
             "datos": [],
         }
 
+    memoria[session_id] = {
+        "categoria": categoria,
+        "lat": lat,
+        "lon": lon,
+        "ts": time.time(),
+    }
+
     candidatos = [l for l in lugares if texto_match(l, categoria)]
 
     if not candidatos:
@@ -149,58 +171,35 @@ def bot(
             "datos": [],
         }
 
+    # SIN UBICACIÓN → lista útil
     if lat is None or lon is None:
-        memoria[session_id] = {
-            "categoria": categoria,
-            "lat": None,
-            "lon": None,
-            "resultados": [],
-            "indice": 0,
-            "ts": time.time(),
-        }
         return {
-            "respuesta": f"Encontré {len(candidatos)} {categoria}. Decime dónde estás y te digo el más cercano.",
+            "respuesta": f"Encontré {len(candidatos)} {categoria}. Si me decís dónde estás, te digo el más cercano.",
             "datos": candidatos[:5],
         }
 
-    # calcular distancias
+    # CON UBICACIÓN → cercanía real
     enriquecidos = []
     for l in candidatos:
-        if l.get("lat") and l.get("lon"):
-            l2 = l.copy()
-            l2["distancia_m"] = round(
-                distancia_metros(lat, lon, l["lat"], l["lon"]), 1
-            )
-            enriquecidos.append(l2)
+        if l.get("lat") is None or l.get("lon") is None:
+            continue
+        d = distancia_metros(lat, lon, l["lat"], l["lon"])
+        l2 = l.copy()
+        l2["distancia_m"] = round(d, 1)
+        enriquecidos.append(l2)
 
-    enriquecidos.sort(key=lambda x: x["distancia_m"])
-
-    indice = mem.get("indice", 0)
-
-    # siguiente opción
-    if info["quiere_siguiente"]:
-        indice += 1
-
-    if indice >= len(enriquecidos):
+    if not enriquecidos:
         return {
-            "respuesta": "No tengo más opciones cercanas.",
+            "respuesta": "Tengo lugares, pero no coordenadas para calcular cercanía.",
             "datos": [],
         }
 
-    elegido = enriquecidos[indice]
-
-    memoria[session_id] = {
-        "categoria": categoria,
-        "lat": lat,
-        "lon": lon,
-        "resultados": enriquecidos,
-        "indice": indice,
-        "ts": time.time(),
-    }
+    enriquecidos.sort(key=lambda x: x["distancia_m"])
+    top = enriquecidos[:3]
 
     return {
-        "respuesta": f"{elegido.get('nombre', 'Este')} está a {elegido['distancia_m']} metros.",
-        "datos": [elegido],
+        "respuesta": f"El lugar más cercano está a {top[0]['distancia_m']} metros.",
+        "datos": top,
     }
 
 # =========================
@@ -211,7 +210,7 @@ def health():
     return {
         "status": "ok",
         "lugares": len(lugares),
-        "sesiones": len(memoria),
+        "sesiones_activas": len(memoria),
     }
 
 
