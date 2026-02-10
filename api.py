@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import json
@@ -28,7 +28,7 @@ DATA_PATH = "ide_normalizado.json"
 
 lugares = []
 
-# memoria simple
+# memoria simple por sesión
 memoria = {}
 MEMORIA_TTL = 300  # segundos
 
@@ -41,7 +41,10 @@ def distancia_metros(lat1, lon1, lat2, lon2):
     phi2 = math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    )
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
@@ -89,20 +92,20 @@ def interpretar(pregunta: str):
         "escuela": ["escuela", "colegio", "primaria", "secundaria"],
         "hospital": ["hospital", "clinica", "caps", "salita", "sanatorio"],
         "plaza": ["plaza", "parque"],
-        "calle": ["calle", "avenida", "av", "bulevar"]
+        "calle": ["calle", "avenida", "av", "bulevar"],
     }
 
     palabras_cercania = [
         "cerca", "cercano", "cercana",
         "por aca", "por acá", "alrededor",
         "mas cerca", "más cerca",
-        "cerca mio", "cerca mío"
+        "cerca mio", "cerca mío",
     ]
 
     palabras_lista = [
         "todos", "todas", "lista",
         "ver", "mostrar", "hay",
-        "existen", "conozco"
+        "existen",
     ]
 
     categoria = None
@@ -112,28 +115,16 @@ def interpretar(pregunta: str):
             break
 
     quiere_cercania = any(w in p for w in palabras_cercania)
-
     quiere_lista = any(w in p for w in palabras_lista)
 
-    # si pregunta algo corto tipo "escuelas", "hospitales"
     if len(p.split()) <= 2 and categoria:
         quiere_lista = True
 
     return {
         "categoria": categoria,
         "quiere_cercania": quiere_cercania,
-        "quiere_lista": quiere_lista
+        "quiere_lista": quiere_lista,
     }
-
-
-    categoria = None
-    for c, palabras in categorias.items():
-        if any(w in p for w in palabras):
-            categoria = c
-            break
-
-    usa_cercania = any(x in p for x in ["cerca", "por acá", "alrededor"])
-    return categoria, usa_cercania
 
 # =========================
 # BOT
@@ -147,7 +138,11 @@ def bot(
 ):
     limpiar_memoria()
 
-    categoria, usa_cercania = interpretar(pregunta)
+    info = interpretar(pregunta)
+    categoria = info["categoria"]
+    quiere_cercania = info["quiere_cercania"]
+    quiere_lista = info["quiere_lista"]
+
     mem = memoria.get(session_id, {})
 
     if categoria is None:
@@ -158,7 +153,10 @@ def bot(
         lon = mem.get("lon")
 
     if categoria is None:
-        return {"respuesta": "¿Qué tipo de lugar estás buscando?", "datos": []}
+        return {
+            "respuesta": "¿Qué tipo de lugar estás buscando?",
+            "datos": [],
+        }
 
     memoria[session_id] = {
         "categoria": categoria,
@@ -170,11 +168,14 @@ def bot(
     candidatos = [l for l in lugares if texto_match(l, categoria)]
 
     if not candidatos:
-        return {"respuesta": f"No encontré {categoria}.", "datos": []}
+        return {
+            "respuesta": f"No encontré {categoria}.",
+            "datos": [],
+        }
 
     if lat is None or lon is None:
         return {
-            "respuesta": f"Encontré {len(candidatos)} {categoria}. Decime dónde estás.",
+            "respuesta": f"Encontré {len(candidatos)} {categoria}. Si me decís dónde estás, te digo el más cercano.",
             "datos": candidatos[:5],
         }
 
@@ -188,10 +189,23 @@ def bot(
         enriquecidos.append(l2)
 
     enriquecidos.sort(key=lambda x: x["distancia_m"])
-    top = enriquecidos[:3]
 
+    if quiere_cercania:
+        top = enriquecidos[:3]
+        return {
+            "respuesta": f"El {categoria} más cercano está a {top[0]['distancia_m']} metros.",
+            "datos": top,
+        }
+
+    if quiere_lista:
+        return {
+            "respuesta": f"Estos son algunos {categoria} ordenados por cercanía.",
+            "datos": enriquecidos[:5],
+        }
+
+    top = enriquecidos[:3]
     return {
-        "respuesta": f"El más cercano está a {top[0]['distancia_m']} metros.",
+        "respuesta": f"El más cercano está a {top[0]['distancia_m']} metros. ¿Querés que te muestre más?",
         "datos": top,
     }
 
@@ -205,6 +219,3 @@ def health():
         "lugares": len(lugares),
         "sesiones": len(memoria),
     }
-
-
-
