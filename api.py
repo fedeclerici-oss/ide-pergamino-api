@@ -1,33 +1,35 @@
 from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 import json
 import math
+import os
 import requests
-from typing import Optional
 
-app = FastAPI(
-    title="IDE Pergamino API",
-    description="Búsqueda contextual de lugares, calles y servicios",
-    version="1.0.0",
+app = FastAPI(title="IDE Pergamino API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # =========================
 # CONFIG
 # =========================
 
-GEOJSON_URL = (
-    "https://github.com/fedeclerici-oss/ide-pergamino-api/"
-    "releases/download/v1.0.0/ide_normalizado.json"
-)
+DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/download/v1.0.0/ide_normalizado.json"
+DATA_PATH = "ide_normalizado.json"
 
 lugares = []
-
 
 # =========================
 # UTILIDADES
 # =========================
 
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371  # km
+def distancia_metros(lat1, lon1, lat2, lon2):
+    R = 6371000
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
@@ -40,51 +42,35 @@ def haversine(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def normalizar(texto: str) -> str:
-    return texto.lower().strip()
+def texto_match(lugar, q):
+    q = q.lower()
+    for campo in ["nombre", "tipo", "subtipo", "descripcion", "capa_origen"]:
+        valor = lugar.get(campo)
+        if valor and q in str(valor).lower():
+            return True
+    return False
 
 
 # =========================
-# STARTUP
+# CARGA DE DATOS
 # =========================
 
 @app.on_event("startup")
 def cargar_datos():
     global lugares
-    print("⬇️ Descargando GeoJSON desde GitHub Release...")
 
-    resp = requests.get(GEOJSON_URL, timeout=60)
-    resp.raise_for_status()
+    if not os.path.exists(DATA_PATH):
+        print("⬇️ Descargando GeoJSON desde GitHub Release...")
+        r = requests.get(DATA_URL, timeout=60)
+        r.raise_for_status()
+        with open(DATA_PATH, "wb") as f:
+            f.write(r.content)
 
-    data = resp.json()
+    with open(DATA_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
-    if "features" not in data:
-        raise RuntimeError("❌ El archivo no es un GeoJSON válido")
-
-    lugares = []
-
-    for f in data["features"]:
-        props = f.get("properties", {})
-        geom = f.get("geometry", {})
-
-        if not geom or "coordinates" not in geom:
-            continue
-
-        lon, lat = geom["coordinates"]
-
-        lugares.append({
-            "id": props.get("id"),
-            "tipo": props.get("tipo"),
-            "subtipo": props.get("subtipo"),
-            "nombre": props.get("nombre"),
-            "descripcion": props.get("descripcion"),
-            "lat": lat,
-            "lon": lon,
-            "fuente": props.get("fuente"),
-            "capa_origen": props.get("capa_origen"),
-        })
-
-    print(f"✅ Datos cargados: {len(lugares)} registros")
+    lugares = data if isinstance(data, list) else data.get("features", [])
+    print(f"✅ {len(lugares)} lugares cargados")
 
 
 # =========================
@@ -92,7 +78,7 @@ def cargar_datos():
 # =========================
 
 @app.get("/")
-def home():
+def health():
     return {
         "status": "ok",
         "lugares_cargados": len(lugares)
@@ -101,51 +87,73 @@ def home():
 
 @app.get("/buscar")
 def buscar(
-    q: str = Query(..., description="Texto a buscar"),
+    q: str = Query(..., min_length=2),
     limit: int = 10
 ):
-    qn = normalizar(q)
-
     resultados = [
-        l for l in lugares
-        if l["nombre"] and qn in normalizar(l["nombre"])
-    ]
+        l for l in lugares if texto_match(l, q)
+    ][:limit]
 
     return {
+        "query": q,
         "cantidad": len(resultados),
-        "resultados": resultados[:limit]
+        "resultados": resultados
     }
 
 
 @app.get("/buscar_contexto")
 def buscar_contexto(
-    q: str = Query(..., description="Texto a buscar"),
-    lat: Optional[float] = None,
-    lon: Optional[float] = None,
-    limit: int = 5
+    q: str = Query(..., min_length=2),
+    lat: float | None = None,
+    lon: float | None = None,
+    limit: int = 10
 ):
-    qn = normalizar(q)
+    candidatos = [l for l in lugares if texto_match(l, q)]
 
-    candidatos = [
-        l for l in lugares
-        if l["nombre"] and qn in normalizar(l["nombre"])
-    ]
+    if not candidatos:
+        return {
+            "mensaje": f"No encontré resultados para '{q}', pero puedo buscar algo parecido si querés.",
+            "estrategia": "sin_resultados",
+            "resultados": []
+        }
 
-    # Si hay coordenadas, ordenamos por cercanía real
-    if lat is not None and lon is not None:
-        for l in candidatos:
-            l["distancia_km"] = haversine(
-                lat, lon, l["lat"], l["lon"]
-            )
+    if lat is None or lon is None:
+        return {
+            "mensaje": f"Encontré {len(candidatos)} resultados para '{q}'.",
+            "estrategia": "texto_sin_ubicacion",
+            "resultados": candidatos[:limit]
+        }
 
-        candidatos.sort(key=lambda x: x["distancia_km"])
-    else:
-        # Si no hay coords → igual respondemos
-        for l in candidatos:
-            l["distancia_km"] = None
+    enriquecidos = []
+    for l in candidatos:
+        if l.get("lat") is None or l.get("lon") is None:
+            continue
+        d = distancia_metros(lat, lon, l["lat"], l["lon"])
+        l2 = l.copy()
+        l2["distancia_m"] = round(d, 1)
+        enriquecidos.append(l2)
+
+    enriquecidos.sort(key=lambda x: x["distancia_m"])
+
+    cerca_300 = [l for l in enriquecidos if l["distancia_m"] <= 300]
+    cerca_1000 = [l for l in enriquecidos if 300 < l["distancia_m"] <= 1000]
+
+    if cerca_300:
+        return {
+            "mensaje": f"Encontré {len(cerca_300)} resultados a menos de 300 metros.",
+            "estrategia": "cercania_300m",
+            "resultados": cerca_300[:limit]
+        }
+
+    if cerca_1000:
+        return {
+            "mensaje": f"No hay resultados inmediatos, pero encontré {len(cerca_1000)} cerca tuyo (hasta 1 km).",
+            "estrategia": "cercania_1000m",
+            "resultados": cerca_1000[:limit]
+        }
 
     return {
-        "cantidad": len(candidatos),
-        "resultados": candidatos[:limit]
+        "mensaje": "No encontré nada cerca, pero te muestro las coincidencias más relevantes.",
+        "estrategia": "fallback_distancia",
+        "resultados": enriquecidos[:limit]
     }
-
