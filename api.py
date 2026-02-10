@@ -60,7 +60,7 @@ def cargar_datos():
     global lugares
 
     if not os.path.exists(DATA_PATH):
-        print("⬇️ Descargando GeoJSON desde GitHub Release...")
+        print("⬇️ Descargando GeoJSON...")
         r = requests.get(DATA_URL, timeout=60)
         r.raise_for_status()
         with open(DATA_PATH, "wb") as f:
@@ -74,54 +74,69 @@ def cargar_datos():
 
 
 # =========================
-# ENDPOINTS
+# INTERPRETAR PREGUNTA
 # =========================
 
-@app.get("/")
-def health():
+@app.get("/interpretar_pregunta")
+def interpretar_pregunta(pregunta: str):
+    p = pregunta.lower()
+
+    categorias = {
+        "escuela": ["escuela", "colegio", "primaria", "secundaria"],
+        "hospital": ["hospital", "clinica", "caps", "salita"],
+        "plaza": ["plaza", "parque"],
+        "calle": ["calle", "avenida", "av", "ruta"]
+    }
+
+    categoria_detectada = None
+    for cat, palabras in categorias.items():
+        if any(palabra in p for palabra in palabras):
+            categoria_detectada = cat
+            break
+
+    usa_cercania = any(x in p for x in ["cerca", "cercano", "por acá", "alrededor"])
+    pregunta_ubicacion = any(x in p for x in ["donde", "hay", "queda"])
+
     return {
-        "status": "ok",
-        "lugares_cargados": len(lugares)
+        "intencion": "buscar_lugar" if categoria_detectada else "desconocida",
+        "categoria": categoria_detectada,
+        "usa_cercania": usa_cercania,
+        "usa_ubicacion": pregunta_ubicacion
     }
 
 
-@app.get("/buscar")
-def buscar(
-    q: str = Query(..., min_length=2),
-    limit: int = 10
-):
-    resultados = [
-        l for l in lugares if texto_match(l, q)
-    ][:limit]
+# =========================
+# BOT CONVERSACIONAL
+# =========================
 
-    return {
-        "query": q,
-        "cantidad": len(resultados),
-        "resultados": resultados
-    }
-
-
-@app.get("/buscar_contexto")
-def buscar_contexto(
-    q: str = Query(..., min_length=2),
+@app.get("/bot")
+def bot(
+    pregunta: str,
     lat: float | None = None,
     lon: float | None = None,
-    limit: int = 10
 ):
+    interpretacion = interpretar_pregunta(pregunta)
+
+    if interpretacion["intencion"] != "buscar_lugar":
+        return {
+            "respuesta": "No estoy seguro de qué estás buscando. Probá preguntarme por lugares de la ciudad.",
+            "datos": []
+        }
+
+    q = interpretacion["categoria"]
+
     candidatos = [l for l in lugares if texto_match(l, q)]
 
     if not candidatos:
         return {
-            "mensaje": f"No encontré resultados para '{q}', pero puedo buscar algo parecido si querés.",
-            "estrategia": "sin_resultados",
-            "resultados": []
+            "respuesta": f"No encontré {q}, pero puedo intentar con otra cosa si querés.",
+            "datos": []
         }
 
     if lat is None or lon is None:
         return {
-            "mensaje": f"Encontré {len(candidatos)} resultados para '{q}'.",
-            "estrategia": "texto_sin_ubicacion",
-            "resultados": candidatos[:limit]
+            "respuesta": f"Encontré {len(candidatos)} {q}. Si me pasás tu ubicación te digo cuál te queda más cerca.",
+            "datos": candidatos[:5]
         }
 
     enriquecidos = []
@@ -135,25 +150,30 @@ def buscar_contexto(
 
     enriquecidos.sort(key=lambda x: x["distancia_m"])
 
-    cerca_300 = [l for l in enriquecidos if l["distancia_m"] <= 300]
-    cerca_1000 = [l for l in enriquecidos if 300 < l["distancia_m"] <= 1000]
+    cercanos = enriquecidos[:3]
 
-    if cerca_300:
+    if not cercanos:
         return {
-            "mensaje": f"Encontré {len(cerca_300)} resultados a menos de 300 metros.",
-            "estrategia": "cercania_300m",
-            "resultados": cerca_300[:limit]
+            "respuesta": f"Hay {q}, pero no tengo datos de distancia confiables.",
+            "datos": candidatos[:3]
         }
 
-    if cerca_1000:
-        return {
-            "mensaje": f"No hay resultados inmediatos, pero encontré {len(cerca_1000)} cerca tuyo (hasta 1 km).",
-            "estrategia": "cercania_1000m",
-            "resultados": cerca_1000[:limit]
-        }
+    texto = f"Encontré {len(cercanos)} {q} cerca tuyo. El más próximo está a {cercanos[0]['distancia_m']} metros."
 
     return {
-        "mensaje": "No encontré nada cerca, pero te muestro las coincidencias más relevantes.",
-        "estrategia": "fallback_distancia",
-        "resultados": enriquecidos[:limit]
+        "respuesta": texto,
+        "datos": cercanos
     }
+
+
+# =========================
+# HEALTH
+# =========================
+
+@app.get("/")
+def health():
+    return {
+        "status": "ok",
+        "lugares": len(lugares)
+    }
+
