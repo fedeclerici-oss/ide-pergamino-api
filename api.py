@@ -28,9 +28,9 @@ DATA_PATH = "ide_normalizado.json"
 
 lugares = []
 
-# memoria simple por sesión
+# memoria por sesión
 memoria = {}
-MEMORIA_TTL = 300  # segundos
+MEMORIA_TTL = 600  # 10 minutos
 
 # =========================
 # UTILIDADES
@@ -83,29 +83,25 @@ def cargar_datos():
     print(f"✅ {len(lugares)} lugares cargados")
 
 # =========================
-# INTERPRETAR
+# INTERPRETACIÓN HUMANA
 # =========================
 def interpretar(pregunta: str):
     p = pregunta.lower().strip()
 
     categorias = {
         "escuela": ["escuela", "colegio", "primaria", "secundaria"],
-        "hospital": ["hospital", "clinica", "caps", "salita", "sanatorio"],
+        "hospital": ["hospital", "clinica", "sanatorio", "caps", "salita"],
         "plaza": ["plaza", "parque"],
-        "calle": ["calle", "avenida", "av", "bulevar"],
     }
 
-    palabras_cercania = [
-        "cerca", "cercano", "cercana",
+    cercania = [
+        "cerca", "más cerca", "mas cerca", "cercano",
         "por aca", "por acá", "alrededor",
-        "mas cerca", "más cerca",
-        "cerca mio", "cerca mío",
     ]
 
-    palabras_lista = [
-        "todos", "todas", "lista",
-        "ver", "mostrar", "hay",
-        "existen",
+    siguiente = [
+        "otro", "otra", "siguiente", "más",
+        "otro más", "otra opción",
     ]
 
     categoria = None
@@ -114,16 +110,10 @@ def interpretar(pregunta: str):
             categoria = c
             break
 
-    quiere_cercania = any(w in p for w in palabras_cercania)
-    quiere_lista = any(w in p for w in palabras_lista)
-
-    if len(p.split()) <= 2 and categoria:
-        quiere_lista = True
-
     return {
         "categoria": categoria,
-        "quiere_cercania": quiere_cercania,
-        "quiere_lista": quiere_lista,
+        "quiere_cercania": any(w in p for w in cercania),
+        "quiere_siguiente": any(w in p for w in siguiente),
     }
 
 # =========================
@@ -139,31 +129,17 @@ def bot(
     limpiar_memoria()
 
     info = interpretar(pregunta)
-    categoria = info["categoria"]
-    quiere_cercania = info["quiere_cercania"]
-    quiere_lista = info["quiere_lista"]
-
     mem = memoria.get(session_id, {})
 
-    if categoria is None:
-        categoria = mem.get("categoria")
-
-    if lat is None or lon is None:
-        lat = mem.get("lat")
-        lon = mem.get("lon")
+    categoria = info["categoria"] or mem.get("categoria")
+    lat = lat if lat is not None else mem.get("lat")
+    lon = lon if lon is not None else mem.get("lon")
 
     if categoria is None:
         return {
             "respuesta": "¿Qué tipo de lugar estás buscando?",
             "datos": [],
         }
-
-    memoria[session_id] = {
-        "categoria": categoria,
-        "lat": lat,
-        "lon": lon,
-        "ts": time.time(),
-    }
 
     candidatos = [l for l in lugares if texto_match(l, categoria)]
 
@@ -174,39 +150,57 @@ def bot(
         }
 
     if lat is None or lon is None:
+        memoria[session_id] = {
+            "categoria": categoria,
+            "lat": None,
+            "lon": None,
+            "resultados": [],
+            "indice": 0,
+            "ts": time.time(),
+        }
         return {
-            "respuesta": f"Encontré {len(candidatos)} {categoria}. Si me decís dónde estás, te digo el más cercano.",
+            "respuesta": f"Encontré {len(candidatos)} {categoria}. Decime dónde estás y te digo el más cercano.",
             "datos": candidatos[:5],
         }
 
+    # calcular distancias
     enriquecidos = []
     for l in candidatos:
-        if l.get("lat") is None or l.get("lon") is None:
-            continue
-        d = distancia_metros(lat, lon, l["lat"], l["lon"])
-        l2 = l.copy()
-        l2["distancia_m"] = round(d, 1)
-        enriquecidos.append(l2)
+        if l.get("lat") and l.get("lon"):
+            l2 = l.copy()
+            l2["distancia_m"] = round(
+                distancia_metros(lat, lon, l["lat"], l["lon"]), 1
+            )
+            enriquecidos.append(l2)
 
     enriquecidos.sort(key=lambda x: x["distancia_m"])
 
-    if quiere_cercania:
-        top = enriquecidos[:3]
+    indice = mem.get("indice", 0)
+
+    # siguiente opción
+    if info["quiere_siguiente"]:
+        indice += 1
+
+    if indice >= len(enriquecidos):
         return {
-            "respuesta": f"El {categoria} más cercano está a {top[0]['distancia_m']} metros.",
-            "datos": top,
+            "respuesta": "No tengo más opciones cercanas.",
+            "datos": [],
         }
 
-    if quiere_lista:
-        return {
-            "respuesta": f"Estos son algunos {categoria} ordenados por cercanía.",
-            "datos": enriquecidos[:5],
-        }
+    elegido = enriquecidos[indice]
 
-    top = enriquecidos[:3]
+    memoria[session_id] = {
+        "categoria": categoria,
+        "lat": lat,
+        "lon": lon,
+        "resultados": enriquecidos,
+        "indice": indice,
+        "ts": time.time(),
+    }
+
     return {
-        "respuesta": f"El más cercano está a {top[0]['distancia_m']} metros. ¿Querés que te muestre más?",
-        "datos": top,
+        "respuesta": f"{elegido.get('nombre', 'Este')} está a {elegido['distancia_m']} metros.",
+        "datos": [elegido],
     }
 
 # =========================
@@ -219,3 +213,5 @@ def health():
         "lugares": len(lugares),
         "sesiones": len(memoria),
     }
+
+
