@@ -1,8 +1,8 @@
 import os
 import requests
-from flask import Flask, request
+from fastapi import FastAPI, Request
 
-app = Flask(__name__)
+app = FastAPI()
 
 # =========================
 # CONFIG TELEGRAM
@@ -13,7 +13,7 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 # =========================
 # FUNCION PARA RESPONDER
 # =========================
-def send_message(chat_id, text):
+def send_message(chat_id: int, text: str):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -24,40 +24,30 @@ def send_message(chat_id, text):
 # =========================
 # WEBHOOK TELEGRAM
 # =========================
-@app.route("/telegram/webhook", methods=["POST"])
-def telegram_webhook():
-    data = request.get_json()
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
 
-    if not data:
-        return "ok"
+    if "message" not in data:
+        return {"ok": True}
 
-    message = data.get("message")
-    if not message:
-        return "ok"
-
+    message = data["message"]
     chat_id = message["chat"]["id"]
     text = message.get("text", "").lower()
 
     # ---- LOGICA DEL BOT ----
     if text in ["/start", "hola", "hi"]:
-        send_message(chat_id, "👋 Hola! El bot está vivo y funcionando.")
+        send_message(chat_id, "👋 Hola! El bot está activo y escuchando.")
     else:
-        send_message(chat_id, f"📩 Recibí tu mensaje: {text}")
+        send_message(chat_id, f"📩 Entendí esto: {text}")
 
-    return "ok"
-
-# =========================
-# HEALTH CHECK (Render)
-# =========================
-@app.route("/")
-def index():
-    return "API Telegram OK"
+    return {"ok": True}
 
 # =========================
-# MAIN
+# HEALTH CHECK
 # =========================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+@app.get("/")
+def root():
+    return {"status": "API Telegram OK"}
 
 
