@@ -10,12 +10,6 @@ import time
 app = FastAPI(title="IDE Pergamino BOT API")
 
 # =========================
-# TELEGRAM CONFIG
-# =========================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
-# =========================
 # CORS
 # =========================
 app.add_middleware(
@@ -34,9 +28,8 @@ DATA_PATH = "ide_normalizado.json"
 
 lugares = []
 
-# memoria por sesión
 memoria = {}
-MEMORIA_TTL = 600  # 10 minutos
+MEMORIA_TTL = 600
 
 # =========================
 # UTILIDADES
@@ -47,20 +40,8 @@ def distancia_metros(lat1, lon1, lat2, lon2):
     phi2 = math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    )
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def texto_match(lugar, texto):
-    t = texto.lower()
-    for campo in ["nombre", "tipo", "subtipo", "descripcion", "capa_origen"]:
-        v = lugar.get(campo)
-        if v and t in str(v).lower():
-            return True
-    return False
 
 
 def limpiar_memoria():
@@ -68,6 +49,28 @@ def limpiar_memoria():
     for k in list(memoria.keys()):
         if ahora - memoria[k]["ts"] > MEMORIA_TTL:
             del memoria[k]
+
+
+def interpretar(pregunta: str):
+    p = pregunta.lower()
+
+    categorias = {
+        "escuela": ["escuela", "colegio", "primaria", "secundaria"],
+        "hospital": ["hospital", "clinica", "caps", "salita", "sanatorio"],
+        "plaza": ["plaza", "parque"],
+        "calle": ["calle", "avenida", "av", "bulevar"]
+    }
+
+    categoria = None
+    for c, palabras in categorias.items():
+        if any(w in p for w in palabras):
+            categoria = c
+            break
+
+    quiere_cercania = any(x in p for x in ["cerca", "cercano", "alrededor", "más cerca"])
+
+    return categoria, quiere_cercania
+
 
 # =========================
 # CARGA DATOS
@@ -77,7 +80,7 @@ def cargar_datos():
     global lugares
 
     if not os.path.exists(DATA_PATH):
-        r = requests.get(DATA_URL, timeout=120)
+        r = requests.get(DATA_URL, timeout=60)
         r.raise_for_status()
         with open(DATA_PATH, "wb") as f:
             f.write(r.content)
@@ -85,60 +88,12 @@ def cargar_datos():
     with open(DATA_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    if isinstance(data, list):
-        lugares = data
-    elif isinstance(data, dict) and "features" in data:
-        lugares = data["features"]
-    else:
-        lugares = []
+    lugares = data if isinstance(data, list) else data.get("features", [])
+    print(f"✅ {len(lugares)} lugares cargados")
 
-    print(f"✅ Lugares cargados: {len(lugares)}")
 
 # =========================
-# INTERPRETACIÓN HUMANA
-# =========================
-def interpretar(pregunta: str):
-    p = pregunta.lower().strip()
-
-    categorias = {
-        "escuela": ["escuela", "colegio", "primaria", "secundaria"],
-        "hospital": ["hospital", "clinica", "sanatorio", "caps", "salita"],
-        "plaza": ["plaza", "parque"],
-        "calle": ["calle", "avenida", "av", "bulevar"],
-    }
-
-    palabras_cercania = [
-        "cerca", "cercano", "cercana",
-        "por aca", "por acá", "alrededor",
-        "más cerca", "mas cerca"
-    ]
-
-    palabras_lista = [
-        "todos", "todas", "lista", "ver",
-        "mostrar", "hay", "existen"
-    ]
-
-    categoria = None
-    for c, palabras in categorias.items():
-        if any(w in p for w in palabras):
-            categoria = c
-            break
-
-    quiere_cercania = any(w in p for w in palabras_cercania)
-    quiere_lista = any(w in p for w in palabras_lista)
-
-    # preguntas cortas tipo "escuelas"
-    if categoria and len(p.split()) <= 2:
-        quiere_lista = True
-
-    return {
-        "categoria": categoria,
-        "quiere_cercania": quiere_cercania,
-        "quiere_lista": quiere_lista,
-    }
-
-# =========================
-# BOT
+# BOT INTELIGENTE
 # =========================
 @app.get("/bot")
 def bot(
@@ -149,87 +104,63 @@ def bot(
 ):
     limpiar_memoria()
 
-    intent = interpretar(pregunta)
+    categoria, quiere_cercania = interpretar(pregunta)
+
     mem = memoria.get(session_id, {})
 
-    categoria = intent["categoria"] or mem.get("categoria")
-    lat = lat if lat is not None else mem.get("lat")
-    lon = lon if lon is not None else mem.get("lon")
+    if categoria is None:
+        categoria = mem.get("categoria")
+
+    if lat is None or lon is None:
+        lat = mem.get("lat")
+        lon = mem.get("lon")
 
     if categoria is None:
-        return {
-            "respuesta": "¿Qué tipo de lugar estás buscando?",
-            "datos": [],
-        }
+        return {"respuesta": "¿Qué tipo de lugar estás buscando?", "datos": []}
 
     memoria[session_id] = {
         "categoria": categoria,
         "lat": lat,
         "lon": lon,
-        "ts": time.time(),
+        "ts": time.time()
     }
 
-    candidatos = [l for l in lugares if texto_match(l, categoria)]
+    candidatos = [
+        l for l in lugares
+        if categoria in str(l.get("tipo", "")).lower()
+        or categoria in str(l.get("nombre", "")).lower()
+    ]
 
     if not candidatos:
+        return {"respuesta": f"No encontré {categoria}.", "datos": []}
+
+    if lat is None or lon is None:
         return {
-            "respuesta": f"No encontré {categoria}.",
-            "datos": [],
+            "respuesta": f"Encontré {len(candidatos)} {categoria}. Si me pasás tu ubicación te digo el más cercano.",
+            "datos": candidatos[:5]
         }
 
-    # SIN UBICACIÓN → lista útil
-       if lat is None or lon is None:
-        cantidad = len(candidatos)
-
-        if cantidad == 1:
-            texto = f"Encontré 1 {categoria}."
-        else:
-            texto = f"Encontré {cantidad} {categoria}s."
-
-        return {
-            "respuesta": f"{texto} Si me compartís tu ubicación, te digo cuál es el más cercano.",
-            "datos": candidatos[:5],
-        }
-
-
-
-
-    # CON UBICACIÓN → cercanía real
     enriquecidos = []
     for l in candidatos:
-        if l.get("lat") is None or l.get("lon") is None:
-            continue
-        d = distancia_metros(lat, lon, l["lat"], l["lon"])
-        l2 = l.copy()
-        l2["distancia_m"] = round(d, 1)
-        enriquecidos.append(l2)
-
-    if not enriquecidos:
-        return {
-            "respuesta": "Tengo lugares, pero no coordenadas para calcular cercanía.",
-            "datos": [],
-        }
+        if l.get("lat") and l.get("lon"):
+            d = distancia_metros(lat, lon, l["lat"], l["lon"])
+            l2 = l.copy()
+            l2["distancia_m"] = round(d, 1)
+            enriquecidos.append(l2)
 
     enriquecidos.sort(key=lambda x: x["distancia_m"])
+
     top = enriquecidos[:3]
 
     return {
-        "respuesta": f"El lugar más cercano está a {top[0]['distancia_m']} metros.",
-        "datos": top,
+        "respuesta": f"El más cercano está a {top[0]['distancia_m']} metros.",
+        "datos": top
     }
 
-# =========================
-# HEALTH
-# =========================
-@app.get("/")
-def health():
-    return {
-        "status": "ok",
-        "lugares": len(lugares),
-        "sesiones_activas": len(memoria),
-    }
-from fastapi import Request
 
+# =========================
+# TELEGRAM WEBHOOK
+# =========================
 @app.post("/telegram")
 async def telegram_webhook(request: Request):
     data = await request.json()
@@ -237,14 +168,9 @@ async def telegram_webhook(request: Request):
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
 
-        # ===============================
-        # 1️⃣ SI MANDA UBICACIÓN
-        # ===============================
         if "location" in data["message"]:
             lat = data["message"]["location"]["latitude"]
             lon = data["message"]["location"]["longitude"]
-
-            print("Ubicación recibida:", lat, lon)
 
             resultado = bot(
                 session_id=str(chat_id),
@@ -253,30 +179,17 @@ async def telegram_webhook(request: Request):
                 lon=lon
             )
 
-            respuesta = resultado.get("respuesta", "No encontré nada cercano.")
+            respuesta = resultado["respuesta"]
 
-            requests.post(
-                f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": respuesta
-                }
+        else:
+            text = data["message"].get("text", "")
+
+            resultado = bot(
+                session_id=str(chat_id),
+                pregunta=text
             )
 
-            return {"ok": True}
-
-        # ===============================
-        # 2️⃣ SI MANDA TEXTO
-        # ===============================
-        text = data["message"].get("text", "")
-        print("Mensaje:", text)
-
-        resultado = bot(
-            session_id=str(chat_id),
-            pregunta=text
-        )
-
-        respuesta = resultado.get("respuesta", "No entendí tu mensaje.")
+            respuesta = resultado["respuesta"]
 
         requests.post(
             f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage",
@@ -289,4 +202,13 @@ async def telegram_webhook(request: Request):
     return {"ok": True}
 
 
-
+# =========================
+# HEALTH
+# =========================
+@app.get("/")
+def health():
+    return {
+        "status": "ok",
+        "lugares": len(lugares),
+        "sesiones_activas": len(memoria)
+    }
