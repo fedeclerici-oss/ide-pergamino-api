@@ -178,18 +178,19 @@ def bot(
         }
 
     # SIN UBICACIÓN → lista útil
-    if lat is None or lon is None:
-    cantidad = len(candidatos)
+        if lat is None or lon is None:
+        cantidad = len(candidatos)
 
-    if cantidad == 1:
-        texto = f"Encontré 1 {categoria}."
-    else:
-        texto = f"Encontré {cantidad} {categoria}s."
+        if cantidad == 1:
+            texto = f"Encontré 1 {categoria}."
+        else:
+            texto = f"Encontré {cantidad} {categoria}s."
 
-    return {
-        "respuesta": f"{texto} Si me compartís tu ubicación, te digo cuál es el más cercano.",
-        "datos": candidatos[:5],
-    }
+        return {
+            "respuesta": f"{texto} Si me compartís tu ubicación, te digo cuál es el más cercano.",
+            "datos": candidatos[:5],
+        }
+
 
 
     # CON UBICACIÓN → cercanía real
@@ -285,3 +286,4 @@ async def telegram_webhook(request: Request):
         )
 
     return {"ok": True}
+
