@@ -179,10 +179,18 @@ def bot(
 
     # SIN UBICACIÓN → lista útil
     if lat is None or lon is None:
-        return {
-            "respuesta": f"Encontré {len(candidatos)} {categoria}. Si me decís dónde estás, te digo el más cercano.",
-            "datos": candidatos[:5],
-        }
+    cantidad = len(candidatos)
+
+    if cantidad == 1:
+        texto = f"Encontré 1 {categoria}."
+    else:
+        texto = f"Encontré {cantidad} {categoria}s."
+
+    return {
+        "respuesta": f"{texto} Si me compartís tu ubicación, te digo cuál es el más cercano.",
+        "datos": candidatos[:5],
+    }
+
 
     # CON UBICACIÓN → cercanía real
     enriquecidos = []
@@ -224,31 +232,50 @@ from fastapi import Request
 async def telegram_webhook(request: Request):
     data = await request.json()
 
-    if "message" not in data:
-        return {"ok": True}
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
 
-    chat_id = data["message"]["chat"]["id"]
-    text = data["message"].get("text", "")
+        # ===============================
+        # 1️⃣ SI MANDA UBICACIÓN
+        # ===============================
+        if "location" in data["message"]:
+            lat = data["message"]["location"]["latitude"]
+            lon = data["message"]["location"]["longitude"]
 
-    print("Mensaje:", text)
+            print("Ubicación recibida:", lat, lon)
 
-    try:
-        # 👇 LLAMAMOS DIRECTO A LA FUNCIÓN bot()
+            resultado = bot(
+                session_id=str(chat_id),
+                pregunta="cerca",
+                lat=lat,
+                lon=lon
+            )
+
+            respuesta = resultado.get("respuesta", "No encontré nada cercano.")
+
+            requests.post(
+                f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": respuesta
+                }
+            )
+
+            return {"ok": True}
+
+        # ===============================
+        # 2️⃣ SI MANDA TEXTO
+        # ===============================
+        text = data["message"].get("text", "")
+        print("Mensaje:", text)
+
         resultado = bot(
             session_id=str(chat_id),
-            pregunta=text,
-            lat=None,
-            lon=None
+            pregunta=text
         )
 
-        respuesta = resultado.get("respuesta", "No entendí la consulta.")
+        respuesta = resultado.get("respuesta", "No entendí tu mensaje.")
 
-    except Exception as e:
-        print("ERROR interno:", e)
-        respuesta = "Hubo un error procesando tu mensaje."
-
-    # Enviar respuesta a Telegram
-    try:
         requests.post(
             f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage",
             json={
@@ -256,7 +283,5 @@ async def telegram_webhook(request: Request):
                 "text": respuesta
             }
         )
-    except Exception as e:
-        print("ERROR TELEGRAM:", e)
 
     return {"ok": True}
