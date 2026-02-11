@@ -10,6 +10,12 @@ import time
 app = FastAPI(title="IDE Pergamino BOT API")
 
 # =========================
+# TELEGRAM CONFIG
+# =========================
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+# =========================
 # CORS
 # =========================
 app.add_middleware(
@@ -244,4 +250,5 @@ async def telegram_webhook(request: Request):
     except Exception as e:
         print("❌ ERROR TELEGRAM:", str(e))
         return {"error": str(e)}
+
 
