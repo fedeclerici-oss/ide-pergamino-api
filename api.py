@@ -212,5 +212,32 @@ def health():
         "lugares": len(lugares),
         "sesiones_activas": len(memoria),
     }
+from fastapi import Request
+import requests
+import os
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+@app.post("/telegram")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
+
+        respuesta = f"Recibí tu mensaje: {text}"
+
+        requests.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": respuesta
+            }
+        )
+
+    return {"ok": True}
+
 
 
