@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import json
@@ -238,6 +238,7 @@ async def telegram_webhook(request: Request):
         )
 
     return {"ok": True}
+
 
 
 
