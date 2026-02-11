@@ -208,7 +208,16 @@ async def telegram_webhook(request: Request):
 @app.get("/")
 def health():
     return {
+        @app.get("/debug/capas")
+def debug_capas():
+    capas = {}
+    for l in lugares:
+        capa = l.get("capa_origen", "sin_capa")
+        capas[capa] = capas.get(capa, 0) + 1
+    return capas
+
         "status": "ok",
         "lugares": len(lugares),
         "sesiones_activas": len(memoria)
     }
+
