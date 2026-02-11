@@ -222,33 +222,44 @@ from fastapi import Request
 
 @app.post("/telegram")
 async def telegram_webhook(request: Request):
-    try:
-        data = await request.json()
-        print("📩 UPDATE RECIBIDO:", data)
+    data = await request.json()
 
-        if "message" in data:
-            chat_id = data["message"]["chat"]["id"]
-            text = data["message"].get("text", "")
-
-            print("📝 Mensaje:", text)
-
-            respuesta = f"Recibí: {text}"
-
-            r = requests.post(
-                f"{TELEGRAM_API}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": respuesta
-                },
-                timeout=10
-            )
-
-            print("📤 Respuesta Telegram:", r.status_code, r.text)
-
+    if "message" not in data:
         return {"ok": True}
 
+    chat_id = data["message"]["chat"]["id"]
+    text = data["message"].get("text", "")
+
+    print("Mensaje:", text)
+
+    # Llamamos a nuestro propio motor inteligente
+    try:
+        r = requests.get(
+            f"{os.environ.get('API_URL')}/bot",
+            params={
+                "session_id": str(chat_id),
+                "pregunta": text
+            },
+            timeout=10
+        )
+
+        resultado = r.json()
+        respuesta = resultado.get("respuesta", "No entendí la consulta.")
+
     except Exception as e:
-        print("❌ ERROR TELEGRAM:", str(e))
-        return {"error": str(e)}
+        print("ERROR llamando a /bot:", e)
+        respuesta = "Hubo un error procesando tu mensaje."
 
+    # Enviar respuesta a Telegram
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": respuesta
+            }
+        )
+    except Exception as e:
+        print("ERROR TELEGRAM:", e)
 
+    return {"ok": True}
