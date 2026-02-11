@@ -178,10 +178,10 @@ def bot(
         }
 
     # SIN UBICACIÓN → lista útil
-        if lat is None or lon is None:
+    if lat is None or lon is None:
         cantidad = len(candidatos)
 
-        if cantidad == 1:
+    if cantidad == 1:
             texto = f"Encontré 1 {categoria}."
         else:
             texto = f"Encontré {cantidad} {categoria}s."
@@ -286,4 +286,5 @@ async def telegram_webhook(request: Request):
         )
 
     return {"ok": True}
+
 
