@@ -232,22 +232,19 @@ async def telegram_webhook(request: Request):
 
     print("Mensaje:", text)
 
-    # Llamamos a nuestro propio motor inteligente
     try:
-        r = requests.get(
-            f"{os.environ.get('API_URL')}/bot",
-            params={
-                "session_id": str(chat_id),
-                "pregunta": text
-            },
-            timeout=10
+        # 👇 LLAMAMOS DIRECTO A LA FUNCIÓN bot()
+        resultado = bot(
+            session_id=str(chat_id),
+            pregunta=text,
+            lat=None,
+            lon=None
         )
 
-        resultado = r.json()
         respuesta = resultado.get("respuesta", "No entendí la consulta.")
 
     except Exception as e:
-        print("ERROR llamando a /bot:", e)
+        print("ERROR interno:", e)
         respuesta = "Hubo un error procesando tu mensaje."
 
     # Enviar respuesta a Telegram
