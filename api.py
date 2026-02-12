@@ -27,8 +27,10 @@ DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/downlo
 DATA_PATH = "ide_normalizado.json"
 
 lugares = []
+
 memoria = {}
 MEMORIA_TTL = 600
+
 
 # =========================
 # UTILIDADES
@@ -55,7 +57,7 @@ def interpretar(pregunta: str):
 
     categorias = {
         "escuela": ["escuela", "colegio", "primaria", "secundaria"],
-        "hospital": ["hospital", "clinica", "caps", "salita", "sanatorio"],
+        "hospital": ["hospital", "clinica", "caps", "salita", "sanatorio", "salud"],
         "plaza": ["plaza", "parque"],
         "calle": ["calle", "avenida", "av", "bulevar"]
     }
@@ -71,47 +73,17 @@ def interpretar(pregunta: str):
     return categoria, quiere_cercania
 
 
-# =========================
-# CONSULTAS POR CAPA (NUEVO)
-# =========================
-def contar_por_capa(nombre_parcial):
-    coincidencias = [
-        l for l in lugares
-        if nombre_parcial in str(l.get("capa_origen", "")).lower()
-    ]
-    return len(coincidencias)
+def resumen_zona(lat, lon, radio=300):
+    resumen = {}
 
+    for l in lugares:
+        if l.get("lat") and l.get("lon"):
+            d = distancia_metros(lat, lon, l["lat"], l["lon"])
+            if d <= radio:
+                capa = l.get("capa_origen", "otros")
+                resumen[capa] = resumen.get(capa, 0) + 1
 
-def detectar_consulta_estadistica(pregunta: str):
-    p = pregunta.lower()
-
-    if "cuánt" not in p and "cuantos" not in p:
-        return None
-
-    if "luminaria" in p:
-        total = contar_por_capa("luminaria")
-        return f"Hay {total} luminarias registradas."
-
-    if "semaforo" in p:
-        total = contar_por_capa("semaforo")
-        return f"Hay {total} semáforos registrados."
-
-    if "barrio" in p:
-        total = contar_por_capa("barrios")
-        return f"Hay {total} barrios registrados."
-
-    if "cloaca" in p:
-        total = contar_por_capa("cloaca")
-        return f"Hay {total} registros vinculados a cloacas."
-
-    if "agua" in p:
-        total = contar_por_capa("agua")
-        return f"Hay {total} registros vinculados a red de agua."
-
-    if "total" in p:
-        return f"El IDE tiene {len(lugares)} registros totales cargados."
-
-    return None
+    return resumen
 
 
 # =========================
@@ -135,7 +107,7 @@ def cargar_datos():
 
 
 # =========================
-# BOT INTELIGENTE
+# BOT
 # =========================
 @app.get("/bot")
 def bot(
@@ -146,12 +118,8 @@ def bot(
 ):
     limpiar_memoria()
 
-    # 🔥 PRIMERO: detectar consultas estadísticas
-    estadistica = detectar_consulta_estadistica(pregunta)
-    if estadistica:
-        return {"respuesta": estadistica, "datos": []}
-
     categoria, quiere_cercania = interpretar(pregunta)
+
     mem = memoria.get(session_id, {})
 
     if categoria is None:
@@ -161,15 +129,42 @@ def bot(
         lat = mem.get("lat")
         lon = mem.get("lon")
 
-    if categoria is None:
-        return {"respuesta": "¿Qué tipo de lugar estás buscando?", "datos": []}
-
     memoria[session_id] = {
         "categoria": categoria,
         "lat": lat,
         "lon": lon,
         "ts": time.time()
     }
+
+    # =========================
+    # CONSULTA ZONA COMPLETA
+    # =========================
+    if lat is not None and lon is not None and any(
+        x in pregunta.lower() for x in ["zona", "alrededor", "qué hay", "que hay"]
+    ):
+        resumen = resumen_zona(lat, lon, radio=300)
+
+        if not resumen:
+            return {
+                "respuesta": "No encontré infraestructura cercana en un radio de 300 metros.",
+                "datos": []
+            }
+
+        texto = "En un radio de 300 metros encontré:\n"
+
+        for capa, cantidad in sorted(resumen.items(), key=lambda x: x[1], reverse=True):
+            texto += f"- {cantidad} registros de {capa}\n"
+
+        return {
+            "respuesta": texto,
+            "datos": []
+        }
+
+    # =========================
+    # SI NO HAY CATEGORÍA
+    # =========================
+    if categoria is None:
+        return {"respuesta": "¿Qué tipo de lugar estás buscando?", "datos": []}
 
     candidatos = [
         l for l in lugares
@@ -195,6 +190,10 @@ def bot(
             enriquecidos.append(l2)
 
     enriquecidos.sort(key=lambda x: x["distancia_m"])
+
+    if not enriquecidos:
+        return {"respuesta": "No encontré resultados con coordenadas.", "datos": []}
+
     top = enriquecidos[:3]
 
     return {
@@ -219,27 +218,49 @@ async def telegram_webhook(request: Request):
 
             resultado = bot(
                 session_id=str(chat_id),
-                pregunta="cerca",
+                pregunta="zona",
                 lat=lat,
                 lon=lon
             )
 
+            respuesta = resultado["respuesta"]
+
         else:
             text = data["message"].get("text", "")
+
             resultado = bot(
                 session_id=str(chat_id),
                 pregunta=text
             )
 
+            respuesta = resultado["respuesta"]
+
         requests.post(
             f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": resultado["respuesta"]
+                "text": respuesta
             }
         )
 
     return {"ok": True}
 
 
+# =========================
+# DEBUG
+# =========================
+@app.get("/debug/capas")
+def debug_capas():
+    capas = {}
+    for l in lugares:
+        capa = l.get("capa_origen", "sin_capa")
+        capas[capa] = capas.get(capa, 0) + 1
 
+    capas_ordenadas = dict(
+        sorted(capas.items(), key=lambda x: x[1], reverse=True)
+    )
+
+    return {
+        "total_registros": len(lugares),
+        "capas_detectadas": capas_ordenadas
+    }
