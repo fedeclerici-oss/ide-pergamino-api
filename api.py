@@ -27,7 +27,6 @@ DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/downlo
 DATA_PATH = "ide_normalizado.json"
 
 lugares = []
-
 memoria = {}
 MEMORIA_TTL = 600
 
@@ -73,6 +72,49 @@ def interpretar(pregunta: str):
 
 
 # =========================
+# CONSULTAS POR CAPA (NUEVO)
+# =========================
+def contar_por_capa(nombre_parcial):
+    coincidencias = [
+        l for l in lugares
+        if nombre_parcial in str(l.get("capa_origen", "")).lower()
+    ]
+    return len(coincidencias)
+
+
+def detectar_consulta_estadistica(pregunta: str):
+    p = pregunta.lower()
+
+    if "cuánt" not in p and "cuantos" not in p:
+        return None
+
+    if "luminaria" in p:
+        total = contar_por_capa("luminaria")
+        return f"Hay {total} luminarias registradas."
+
+    if "semaforo" in p:
+        total = contar_por_capa("semaforo")
+        return f"Hay {total} semáforos registrados."
+
+    if "barrio" in p:
+        total = contar_por_capa("barrios")
+        return f"Hay {total} barrios registrados."
+
+    if "cloaca" in p:
+        total = contar_por_capa("cloaca")
+        return f"Hay {total} registros vinculados a cloacas."
+
+    if "agua" in p:
+        total = contar_por_capa("agua")
+        return f"Hay {total} registros vinculados a red de agua."
+
+    if "total" in p:
+        return f"El IDE tiene {len(lugares)} registros totales cargados."
+
+    return None
+
+
+# =========================
 # CARGA DATOS
 # =========================
 @app.on_event("startup")
@@ -104,8 +146,12 @@ def bot(
 ):
     limpiar_memoria()
 
-    categoria, quiere_cercania = interpretar(pregunta)
+    # 🔥 PRIMERO: detectar consultas estadísticas
+    estadistica = detectar_consulta_estadistica(pregunta)
+    if estadistica:
+        return {"respuesta": estadistica, "datos": []}
 
+    categoria, quiere_cercania = interpretar(pregunta)
     mem = memoria.get(session_id, {})
 
     if categoria is None:
@@ -149,7 +195,6 @@ def bot(
             enriquecidos.append(l2)
 
     enriquecidos.sort(key=lambda x: x["distancia_m"])
-
     top = enriquecidos[:3]
 
     return {
@@ -179,58 +224,22 @@ async def telegram_webhook(request: Request):
                 lon=lon
             )
 
-            respuesta = resultado["respuesta"]
-
         else:
             text = data["message"].get("text", "")
-
             resultado = bot(
                 session_id=str(chat_id),
                 pregunta=text
             )
 
-            respuesta = resultado["respuesta"]
-
         requests.post(
             f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": respuesta
+                "text": resultado["respuesta"]
             }
         )
 
     return {"ok": True}
 
-# =========================
-# DEBUG INFRAESTRUCTURA
-# =========================
-
-@app.get("/debug/capas")
-def debug_capas():
-    capas = {}
-    for l in lugares:
-        capa = l.get("capa_origen", "sin_capa")
-        capas[capa] = capas.get(capa, 0) + 1
-
-    # Ordenar de mayor a menor
-    capas_ordenadas = dict(
-        sorted(capas.items(), key=lambda x: x[1], reverse=True)
-    )
-
-    return {
-        "total_registros": len(lugares),
-        "capas_detectadas": capas_ordenadas
-    }
-@app.get("/debug/luminarias_campos")
-def debug_luminarias_campos():
-    muestra = []
-
-    for l in lugares:
-        if l.get("capa_origen") == "publico_luminarias.geojson":
-            muestra.append(l)
-            if len(muestra) >= 5:
-                break
-
-    return muestra
 
 
