@@ -55,25 +55,8 @@ def limpiar_memoria():
             del memoria[k]
 
 
-def interpretar(pregunta: str):
-    p = pregunta.lower()
-
-    categorias = {
-        "escuela": ["escuela", "colegio", "primaria", "secundaria"],
-        "hospital": ["hospital", "clinica", "caps", "salita", "sanatorio", "salud"],
-        "plaza": ["plaza", "parque"],
-        "calle": ["calle", "avenida", "av", "bulevar"]
-    }
-
-    categoria = None
-    for c, palabras in categorias.items():
-        if any(w in p for w in palabras):
-            categoria = c
-            break
-
-    quiere_cercania = any(x in p for x in ["cerca", "cercano", "alrededor", "más cerca"])
-
-    return categoria, quiere_cercania
+def normalizar(texto):
+    return texto.lower().strip().replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u")
 
 
 def responder_con_ia(pregunta):
@@ -84,13 +67,83 @@ def responder_con_ia(pregunta):
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Sos un asistente municipal de Pergamino. Respondé claro y breve."},
+                {"role": "system", "content": "Sos un asistente municipal de Pergamino. Respondé claro, breve y útil."},
                 {"role": "user", "content": pregunta}
             ]
         )
         return completion.choices[0].message.content
     except:
         return "No pude procesar la consulta en este momento."
+
+
+def buscar_lugares_por_texto(texto):
+    texto = normalizar(texto)
+
+    resultados = []
+    for l in lugares:
+        nombre = normalizar(str(l.get("nombre", "")))
+        tipo = normalizar(str(l.get("tipo", "")))
+
+        if texto in nombre or texto in tipo:
+            resultados.append(l)
+
+    return resultados
+
+
+def responder_donde(pregunta, lat=None, lon=None):
+    texto = normalizar(pregunta)
+
+    # extraer palabra clave después de "donde"
+    palabras = texto.split()
+    if "donde" in palabras:
+        idx = palabras.index("donde")
+        clave = " ".join(palabras[idx+1:])
+    else:
+        clave = texto
+
+    candidatos = buscar_lugares_por_texto(clave)
+
+    if not candidatos:
+        return None
+
+    # si hay ubicación → ordenar por distancia
+    if lat is not None and lon is not None:
+        enriquecidos = []
+        for l in candidatos:
+            if l.get("lat") and l.get("lon"):
+                d = distancia_metros(lat, lon, l["lat"], l["lon"])
+                l2 = l.copy()
+                l2["distancia_m"] = round(d, 1)
+                enriquecidos.append(l2)
+
+        enriquecidos.sort(key=lambda x: x["distancia_m"])
+
+        if enriquecidos:
+            top = enriquecidos[0]
+            link = f"https://www.google.com/maps/search/?api=1&query={top['lat']},{top['lon']}"
+            return f"{top.get('nombre','Sin nombre')} está a {top['distancia_m']} metros.\n{link}"
+
+    # sin ubicación → devolver primeros 3
+    texto_respuesta = ""
+    for l in candidatos[:3]:
+        if l.get("lat") and l.get("lon"):
+            link = f"https://www.google.com/maps/search/?api=1&query={l['lat']},{l['lon']}"
+            texto_respuesta += f"{l.get('nombre','Sin nombre')}\n{link}\n\n"
+
+    return texto_respuesta.strip() if texto_respuesta else None
+
+
+def resumen_zona(lat, lon, radio=300):
+    resumen = {}
+
+    for l in lugares:
+        if l.get("lat") and l.get("lon"):
+            d = distancia_metros(lat, lon, l["lat"], l["lon"])
+            if d <= radio:
+                capa = l.get("capa_origen", "otros")
+                resumen[capa] = resumen.get(capa, 0) + 1
+
+    return resumen
 
 
 # =========================
@@ -125,90 +178,64 @@ def bot(
 ):
     limpiar_memoria()
 
-    categoria, quiere_cercania = interpretar(pregunta)
     mem = memoria.get(session_id, {})
 
-    if categoria is None:
-        categoria = mem.get("categoria")
-
-    if lat is None or lon is None:
+    if lat is None:
         lat = mem.get("lat")
+    if lon is None:
         lon = mem.get("lon")
 
     memoria[session_id] = {
-        "categoria": categoria,
         "lat": lat,
         "lon": lon,
         "ts": time.time()
     }
 
-    # =========================
-    # SI NO HAY CATEGORIA → IA
-    # =========================
-    if categoria is None:
-        respuesta_ia = responder_con_ia(pregunta)
-        return {"respuesta": respuesta_ia, "datos": []}
-
-    candidatos = [
-        l for l in lugares
-        if categoria in str(l.get("tipo", "")).lower()
-        or categoria in str(l.get("nombre", "")).lower()
-    ]
+    pregunta_norm = normalizar(pregunta)
 
     # =========================
-    # SI NO ENCUENTRA DATOS → IA
+    # CONSULTA ZONA
     # =========================
-    if not candidatos:
-        respuesta_ia = responder_con_ia(pregunta)
-        return {"respuesta": respuesta_ia, "datos": []}
+    if lat is not None and lon is not None and any(x in pregunta_norm for x in ["zona","alrededor","que hay"]):
+        resumen = resumen_zona(lat, lon, radio=300)
+
+        if not resumen:
+            return {"respuesta": "No encontré infraestructura cercana en un radio de 300 metros.", "datos": []}
+
+        texto = "En un radio de 300 metros encontré:\n\n"
+        for capa, cantidad in sorted(resumen.items(), key=lambda x: x[1], reverse=True):
+            texto += f"- {cantidad} registros de {capa}\n"
+
+        return {"respuesta": texto, "datos": []}
 
     # =========================
-    # SIN UBICACIÓN → GOOGLE MAPS
+    # PREGUNTAS DE UBICACIÓN
     # =========================
-    if lat is None or lon is None:
-        top = candidatos[:3]
+    if pregunta_norm.startswith("donde"):
+        respuesta = responder_donde(pregunta, lat, lon)
+        if respuesta:
+            return {"respuesta": respuesta, "datos": []}
+
+    # =========================
+    # BUSQUEDA GENERAL
+    # =========================
+    candidatos = buscar_lugares_por_texto(pregunta)
+
+    if candidatos:
         texto = ""
+        for l in candidatos[:3]:
+            if l.get("lat") and l.get("lon"):
+                link = f"https://www.google.com/maps/search/?api=1&query={l['lat']},{l['lon']}"
+                texto += f"{l.get('nombre','Sin nombre')}\n{link}\n\n"
 
-        for l in top:
-            nombre = l.get("nombre", "Sin nombre")
-            lat_l = l.get("lat")
-            lon_l = l.get("lon")
-
-            if lat_l and lon_l:
-                link = f"https://www.google.com/maps/search/?api=1&query={lat_l},{lon_l}"
-            else:
-                link = "Ubicación no disponible"
-
-            texto += f"{nombre}\n{link}\n\n"
-
-        return {"respuesta": texto.strip(), "datos": top}
+        if texto:
+            return {"respuesta": texto.strip(), "datos": candidatos[:3]}
 
     # =========================
-    # CON UBICACIÓN → MÁS CERCANO
+    # FALLBACK A IA
     # =========================
-    enriquecidos = []
-
-    for l in candidatos:
-        if l.get("lat") and l.get("lon"):
-            d = distancia_metros(lat, lon, l["lat"], l["lon"])
-            l2 = l.copy()
-            l2["distancia_m"] = round(d, 1)
-            enriquecidos.append(l2)
-
-    enriquecidos.sort(key=lambda x: x["distancia_m"])
-
-    if not enriquecidos:
-        return {"respuesta": "No encontré resultados con coordenadas.", "datos": []}
-
-    top = enriquecidos[:3]
-
-    texto = f"El más cercano está a {top[0]['distancia_m']} metros.\n\n"
-
-    for l in top:
-        link = f"https://www.google.com/maps/search/?api=1&query={l['lat']},{l['lon']}"
-        texto += f"{l.get('nombre','Sin nombre')}\n{link}\n\n"
-
-    return {"respuesta": texto.strip(), "datos": top}
+    respuesta_ia = responder_con_ia(pregunta)
+    return {"respuesta": respuesta_ia, "datos": []}
 
 
 # =========================
