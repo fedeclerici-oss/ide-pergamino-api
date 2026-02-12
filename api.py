@@ -221,4 +221,16 @@ def debug_capas():
         "total_registros": len(lugares),
         "capas_detectadas": capas_ordenadas
     }
+@app.get("/debug/luminarias_campos")
+def debug_luminarias_campos():
+    muestra = []
+
+    for l in lugares:
+        if l.get("capa_origen") == "publico_luminarias.geojson":
+            muestra.append(l)
+            if len(muestra) >= 5:
+                break
+
+    return muestra
+
 
