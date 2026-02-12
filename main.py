@@ -5,14 +5,10 @@ import json
 import math
 import os
 import requests
-import time
 from openai import OpenAI
 
-app = FastAPI(title="IDE Pergamino BOT Inteligente")
+app = FastAPI(title="IDE Pergamino BOT Liviano")
 
-# =========================
-# CORS
-# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,24 +17,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =========================
-# CONFIG
-# =========================
 DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/download/v1.0.0/ide_normalizado.json"
-DATA_PATH = "ide_normalizado.json"
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-lugares = []
-memoria = {}
-MEMORIA_TTL = 600  # 10 minutos
-
 
 # =========================
-# UTILIDADES
+# UTILIDAD DISTANCIA
 # =========================
 def distancia_metros(lat1, lon1, lat2, lon2):
     R = 6371000
@@ -50,163 +38,101 @@ def distancia_metros(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def normalizar(texto):
-    return texto.lower().strip()
-
-
-def limpiar_memoria():
-    ahora = time.time()
-    for k in list(memoria.keys()):
-        if ahora - memoria[k]["ts"] > MEMORIA_TTL:
-            del memoria[k]
-
-
 # =========================
-# BUSQUEDA SIMPLE EN BASE
+# BUSQUEDA EN STREAMING
 # =========================
 def buscar_en_base(pregunta, lat=None, lon=None, radio=2000, max_resultados=5):
-    pregunta = normalizar(pregunta)
+    pregunta = pregunta.lower()
     resultados = []
 
-    for l in lugares:
-        nombre = l.get("nombre", "").lower()
-        tipo = l.get("tipo", "").lower()
-        capa = l.get("capa_origen", "").lower()
+    r = requests.get(DATA_URL, timeout=60)
+    data = r.json()
+
+    for item in data:
+        nombre = str(item.get("nombre", "")).lower()
+        tipo = str(item.get("tipo", "")).lower()
+        capa = str(item.get("capa_origen", "")).lower()
 
         texto = f"{nombre} {tipo} {capa}"
 
         if any(p in texto for p in pregunta.split()):
-            if lat and lon and l.get("lat") and l.get("lon"):
-                dist = distancia_metros(lat, lon, l["lat"], l["lon"])
+            if lat and lon and item.get("lat") and item.get("lon"):
+                dist = distancia_metros(lat, lon, item["lat"], item["lon"])
                 if dist <= radio:
-                    l["distancia"] = round(dist, 1)
-                    resultados.append(l)
+                    resultados.append({
+                        "nombre": item.get("nombre"),
+                        "tipo": item.get("tipo"),
+                        "lat": item.get("lat"),
+                        "lon": item.get("lon"),
+                        "distancia": round(dist, 1)
+                    })
             else:
-                resultados.append(l)
+                resultados.append({
+                    "nombre": item.get("nombre"),
+                    "tipo": item.get("tipo"),
+                    "lat": item.get("lat"),
+                    "lon": item.get("lon"),
+                })
 
-    return resultados[:max_resultados]
+        if len(resultados) >= max_resultados:
+            break
 
-
-def construir_contexto(resultados):
-    contexto = ""
-    for l in resultados:
-        contexto += f"""
-Nombre: {l.get('nombre')}
-Tipo: {l.get('tipo')}
-Capa: {l.get('capa_origen')}
-Latitud: {l.get('lat')}
-Longitud: {l.get('lon')}
-Distancia: {l.get('distancia', 'N/D')} metros
----
-"""
-    return contexto
+    return resultados
 
 
 # =========================
-# RESPUESTA CON IA (RAG)
+# RESPUESTA CON IA
 # =========================
 def responder_con_rag(pregunta, lat=None, lon=None):
     if not client:
-        return "La IA no está configurada correctamente."
+        return "IA no configurada."
 
     resultados = buscar_en_base(pregunta, lat, lon)
 
-    contexto = construir_contexto(resultados) if resultados else "No hay registros municipales relevantes."
+    contexto = json.dumps(resultados, indent=2)
 
-    prompt_sistema = """
-Sos un asistente municipal inteligente de Pergamino.
-Respondé usando prioritariamente el contexto municipal proporcionado.
-Si hay coordenadas, agregá link de Google Maps.
-Si no hay datos suficientes, respondé de forma clara y breve.
-"""
+    prompt = f"""
+Sos un asistente municipal de Pergamino.
 
-    prompt_usuario = f"""
-Pregunta del ciudadano:
+Pregunta:
 {pregunta}
 
-Contexto municipal:
+Datos municipales encontrados:
 {contexto}
+
+Respondé usando esos datos.
+Si hay coordenadas, agregá link Google Maps.
+Si no hay datos suficientes, decilo claramente.
 """
 
     try:
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": prompt_sistema},
-                {"role": "user", "content": prompt_usuario}
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
 
         return completion.choices[0].message.content
 
     except Exception as e:
-        return f"Error en IA: {str(e)}"
+        return f"Error IA: {str(e)}"
 
 
 # =========================
-# CARGA DE DATOS
-# =========================
-@app.on_event("startup")
-def cargar_datos():
-    global lugares
-
-    if not os.path.exists(DATA_PATH):
-        print("Descargando base IDE...")
-        r = requests.get(DATA_URL, timeout=60)
-        r.raise_for_status()
-        with open(DATA_PATH, "wb") as f:
-            f.write(r.content)
-
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    # SOLO guardamos campos necesarios (optimiza memoria)
-    lugares = []
-    for item in data:
-        lugares.append({
-            "nombre": item.get("nombre"),
-            "tipo": item.get("tipo"),
-            "capa_origen": item.get("capa_origen"),
-            "lat": item.get("lat"),
-            "lon": item.get("lon"),
-        })
-
-    print(f"✅ {len(lugares)} registros cargados")
-
-
-# =========================
-# ENDPOINT PRINCIPAL
+# ENDPOINT
 # =========================
 @app.get("/bot")
 def bot(
-    session_id: str,
     pregunta: str,
     lat: Optional[float] = None,
     lon: Optional[float] = None,
 ):
-    limpiar_memoria()
-
-    mem = memoria.get(session_id, {})
-
-    if lat is None:
-        lat = mem.get("lat")
-    if lon is None:
-        lon = mem.get("lon")
-
-    memoria[session_id] = {
-        "lat": lat,
-        "lon": lon,
-        "ts": time.time()
-    }
-
     respuesta = responder_con_rag(pregunta, lat, lon)
-
     return {"respuesta": respuesta}
 
 
 # =========================
-# TELEGRAM WEBHOOK
+# TELEGRAM
 # =========================
 @app.post("/telegram")
 async def telegram_webhook(request: Request):
@@ -218,12 +144,7 @@ async def telegram_webhook(request: Request):
         if "location" in data["message"]:
             lat = data["message"]["location"]["latitude"]
             lon = data["message"]["location"]["longitude"]
-
-            respuesta = responder_con_rag(
-                "¿Qué hay cerca?",
-                lat,
-                lon
-            )
+            respuesta = responder_con_rag("¿Qué hay cerca?", lat, lon)
         else:
             text = data["message"].get("text", "")
             respuesta = responder_con_rag(text)
