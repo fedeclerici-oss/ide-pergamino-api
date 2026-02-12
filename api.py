@@ -201,23 +201,24 @@ async def telegram_webhook(request: Request):
 
     return {"ok": True}
 
+# =========================
+# DEBUG INFRAESTRUCTURA
+# =========================
 
-# =========================
-# HEALTH
-# =========================
-@app.get("/")
-def health():
-    return {
-        @app.get("/debug/capas")
+@app.get("/debug/capas")
 def debug_capas():
     capas = {}
     for l in lugares:
         capa = l.get("capa_origen", "sin_capa")
         capas[capa] = capas.get(capa, 0) + 1
-    return capas
 
-        "status": "ok",
-        "lugares": len(lugares),
-        "sesiones_activas": len(memoria)
+    # Ordenar de mayor a menor
+    capas_ordenadas = dict(
+        sorted(capas.items(), key=lambda x: x[1], reverse=True)
+    )
+
+    return {
+        "total_registros": len(lugares),
+        "capas_detectadas": capas_ordenadas
     }
 
