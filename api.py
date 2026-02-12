@@ -6,6 +6,7 @@ import math
 import os
 import requests
 import time
+from openai import OpenAI
 
 app = FastAPI(title="IDE Pergamino BOT API")
 
@@ -26,8 +27,10 @@ app.add_middleware(
 DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/download/v1.0.0/ide_normalizado.json"
 DATA_PATH = "ide_normalizado.json"
 
-lugares = []
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
+lugares = []
 memoria = {}
 MEMORIA_TTL = 600
 
@@ -73,17 +76,21 @@ def interpretar(pregunta: str):
     return categoria, quiere_cercania
 
 
-def resumen_zona(lat, lon, radio=300):
-    resumen = {}
+def responder_con_ia(pregunta):
+    if not client:
+        return "No tengo IA configurada."
 
-    for l in lugares:
-        if l.get("lat") and l.get("lon"):
-            d = distancia_metros(lat, lon, l["lat"], l["lon"])
-            if d <= radio:
-                capa = l.get("capa_origen", "otros")
-                resumen[capa] = resumen.get(capa, 0) + 1
-
-    return resumen
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Sos un asistente municipal de Pergamino. Respondé claro y breve."},
+                {"role": "user", "content": pregunta}
+            ]
+        )
+        return completion.choices[0].message.content
+    except:
+        return "No pude procesar la consulta en este momento."
 
 
 # =========================
@@ -119,7 +126,6 @@ def bot(
     limpiar_memoria()
 
     categoria, quiere_cercania = interpretar(pregunta)
-
     mem = memoria.get(session_id, {})
 
     if categoria is None:
@@ -137,34 +143,11 @@ def bot(
     }
 
     # =========================
-    # CONSULTA ZONA COMPLETA
-    # =========================
-    if lat is not None and lon is not None and any(
-        x in pregunta.lower() for x in ["zona", "alrededor", "qué hay", "que hay"]
-    ):
-        resumen = resumen_zona(lat, lon, radio=300)
-
-        if not resumen:
-            return {
-                "respuesta": "No encontré infraestructura cercana en un radio de 300 metros.",
-                "datos": []
-            }
-
-        texto = "En un radio de 300 metros encontré:\n"
-
-        for capa, cantidad in sorted(resumen.items(), key=lambda x: x[1], reverse=True):
-            texto += f"- {cantidad} registros de {capa}\n"
-
-        return {
-            "respuesta": texto,
-            "datos": []
-        }
-
-    # =========================
-    # SI NO HAY CATEGORÍA
+    # SI NO HAY CATEGORIA → IA
     # =========================
     if categoria is None:
-        return {"respuesta": "¿Qué tipo de lugar estás buscando?", "datos": []}
+        respuesta_ia = responder_con_ia(pregunta)
+        return {"respuesta": respuesta_ia, "datos": []}
 
     candidatos = [
         l for l in lugares
@@ -172,16 +155,39 @@ def bot(
         or categoria in str(l.get("nombre", "")).lower()
     ]
 
+    # =========================
+    # SI NO ENCUENTRA DATOS → IA
+    # =========================
     if not candidatos:
-        return {"respuesta": f"No encontré {categoria}.", "datos": []}
+        respuesta_ia = responder_con_ia(pregunta)
+        return {"respuesta": respuesta_ia, "datos": []}
 
+    # =========================
+    # SIN UBICACIÓN → GOOGLE MAPS
+    # =========================
     if lat is None or lon is None:
-        return {
-            "respuesta": f"Encontré {len(candidatos)} {categoria}. Si me pasás tu ubicación te digo el más cercano.",
-            "datos": candidatos[:5]
-        }
+        top = candidatos[:3]
+        texto = ""
 
+        for l in top:
+            nombre = l.get("nombre", "Sin nombre")
+            lat_l = l.get("lat")
+            lon_l = l.get("lon")
+
+            if lat_l and lon_l:
+                link = f"https://www.google.com/maps/search/?api=1&query={lat_l},{lon_l}"
+            else:
+                link = "Ubicación no disponible"
+
+            texto += f"{nombre}\n{link}\n\n"
+
+        return {"respuesta": texto.strip(), "datos": top}
+
+    # =========================
+    # CON UBICACIÓN → MÁS CERCANO
+    # =========================
     enriquecidos = []
+
     for l in candidatos:
         if l.get("lat") and l.get("lon"):
             d = distancia_metros(lat, lon, l["lat"], l["lon"])
@@ -196,10 +202,13 @@ def bot(
 
     top = enriquecidos[:3]
 
-    return {
-        "respuesta": f"El más cercano está a {top[0]['distancia_m']} metros.",
-        "datos": top
-    }
+    texto = f"El más cercano está a {top[0]['distancia_m']} metros.\n\n"
+
+    for l in top:
+        link = f"https://www.google.com/maps/search/?api=1&query={l['lat']},{l['lon']}"
+        texto += f"{l.get('nombre','Sin nombre')}\n{link}\n\n"
+
+    return {"respuesta": texto.strip(), "datos": top}
 
 
 # =========================
@@ -222,45 +231,23 @@ async def telegram_webhook(request: Request):
                 lat=lat,
                 lon=lon
             )
-
             respuesta = resultado["respuesta"]
 
         else:
             text = data["message"].get("text", "")
-
             resultado = bot(
                 session_id=str(chat_id),
                 pregunta=text
             )
-
             respuesta = resultado["respuesta"]
 
         requests.post(
             f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": respuesta
+                "text": respuesta,
+                "disable_web_page_preview": True
             }
         )
 
     return {"ok": True}
-
-
-# =========================
-# DEBUG
-# =========================
-@app.get("/debug/capas")
-def debug_capas():
-    capas = {}
-    for l in lugares:
-        capa = l.get("capa_origen", "sin_capa")
-        capas[capa] = capas.get(capa, 0) + 1
-
-    capas_ordenadas = dict(
-        sorted(capas.items(), key=lambda x: x[1], reverse=True)
-    )
-
-    return {
-        "total_registros": len(lugares),
-        "capas_detectadas": capas_ordenadas
-    }
