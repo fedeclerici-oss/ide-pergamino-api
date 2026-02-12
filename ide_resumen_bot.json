@@ -1,0 +1,80 @@
+{
+  "altura_de_calle.json": {
+    "total_registros": 11702
+  },
+  "barrido_y_limpieza.json": {
+    "total_registros": 21
+  },
+  "barrios.json": {
+    "total_registros": 45
+  },
+  "callejero.json": {
+    "total_registros": 11702
+  },
+  "cobertura_agua_de_2015_a_2019.json": {
+    "total_registros": 39
+  },
+  "cobertura_agua_de_2019_a_2023.json": {
+    "total_registros": 23
+  },
+  "cobertura_agua_de_2023_a_2027.json": {
+    "total_registros": 37
+  },
+  "cobertura_cloacas_antes_de_2015.json": {
+    "total_registros": 78
+  },
+  "cobertura_cloacas_de_2015_a_2019.json": {
+    "total_registros": 127
+  },
+  "cobertura_cloacas_de_2019_a_2023.json": {
+    "total_registros": 62
+  },
+  "cobertura_cloacas_de_2023_a_2027.json": {
+    "total_registros": 29
+  },
+  "colectoras_cloacales_maximas.json": {
+    "total_registros": 42
+  },
+  "cordon_cuneta.json": {
+    "total_registros": 11702
+  },
+  "luminarias.json": {
+    "total_registros": 25134
+  },
+  "luminarias_bckp.json": {
+    "total_registros": 25134
+  },
+  "luminarias_espacios_verdes.json": {
+    "total_registros": 1346
+  },
+  "material_de_calzada.json": {
+    "total_registros": 11702
+  },
+  "pozos_agua_doss.json": {
+    "total_registros": 95
+  },
+  "pozos_bombeo_doss.json": {
+    "total_registros": 95
+  },
+  "proyectos_infraestructura.json": {
+    "total_registros": 11702
+  },
+  "publico_centros_de_salud.geojson": {
+    "total_registros": 23
+  },
+  "publico_domicilios_por_manzana.geojson": {
+    "total_registros": 2197
+  },
+  "publico_luminarias_espacios_verdes.geojson": {
+    "total_registros": 1346
+  },
+  "publico_recoleccion_residuos_voluminosos.geojson": {
+    "total_registros": 4
+  },
+  "publico_semaforos.geojson": {
+    "total_registros": 294
+  },
+  "recambio_led.json": {
+    "total_registros": 25134
+  }
+}
