@@ -6,9 +6,9 @@ import math
 import os
 import requests
 import time
-from openai import OpenAI
+import google.generativeai as genai
 
-app = FastAPI(title="IDE Pergamino BOT - RAG Municipal")
+app = FastAPI(title="IDE Pergamino BOT - RAG Municipal (Gemini)")
 
 # =========================
 # CORS
@@ -27,8 +27,13 @@ app.add_middleware(
 DATA_URL = "https://github.com/fedeclerici-oss/ide-pergamino-api/releases/download/v1.0.0/ide_normalizado.json"
 DATA_PATH = "ide_normalizado.json"
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    modelo_ia = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    modelo_ia = None
 
 lugares = []
 memoria = {}
@@ -89,42 +94,37 @@ Longitud: {l.get('lon')}
 
 
 # =========================
-# IA CON CONTEXTO (RAG)
+# IA CON CONTEXTO (RAG + GEMINI)
 # =========================
 def responder_con_rag(pregunta, lat=None, lon=None):
-    if not client:
-        return "La IA no está configurada."
 
     resultados = buscar_en_base(pregunta)
 
-    contexto = construir_contexto(resultados) if resultados else "No se encontraron registros relevantes."
+    # Si hay resultados en base municipal → responder directo sin IA
+    if resultados:
+        respuesta = "Encontré estos registros municipales:\n\n"
+        for l in resultados:
+            respuesta += f"• {l.get('nombre')} ({l.get('tipo')})\n"
+            if l.get("lat") and l.get("lon"):
+                respuesta += f"https://www.google.com/maps?q={l.get('lat')},{l.get('lon')}\n"
+            respuesta += "\n"
+        return respuesta.strip()
 
-    prompt_sistema = """
-Sos un asistente municipal inteligente de Pergamino.
-Respondé usando la información del contexto si existe.
-Si hay coordenadas, incluí un link de Google Maps.
-Si el contexto no tiene datos suficientes, respondé con información general clara y breve.
-"""
+    # Si no hay resultados → usar Gemini
+    if not modelo_ia:
+        return "No encontré datos en la base municipal y la IA no está configurada."
 
-    prompt_usuario = f"""
+    prompt = f"""
+Sos un asistente municipal inteligente de la ciudad de Pergamino.
+Respondé de forma clara, breve y profesional.
+
 Pregunta del ciudadano:
 {pregunta}
-
-Contexto municipal:
-{contexto}
 """
 
     try:
-        completion = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": prompt_sistema},
-                {"role": "user", "content": prompt_usuario}
-            ],
-            temperature=0.3
-        )
-
-        return completion.choices[0].message.content
+        response = modelo_ia.generate_content(prompt)
+        return response.text
 
     except Exception as e:
         return f"Error en IA: {str(e)}"
