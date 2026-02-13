@@ -2,13 +2,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import json
-import math
 import os
 import requests
 import time
-import google.generativeai as genai
+from google import genai
 
-app = FastAPI(title="IDE Pergamino BOT - RAG Municipal (Low Memory)")
+app = FastAPI(title="IDE Pergamino BOT - Gemini 2.5 Flash")
 
 # =========================
 # CORS
@@ -30,10 +29,9 @@ DATA_PATH = "ide_normalizado.json"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    modelo_ia = genai.GenerativeModel("gemini-2.5-flash")
+    cliente_ia = genai.Client(api_key=GEMINI_API_KEY)
 else:
-    modelo_ia = None
+    cliente_ia = None
 
 memoria = {}
 MEMORIA_TTL = 600
@@ -54,7 +52,7 @@ def limpiar_memoria():
 
 
 # =========================
-# BUSQUEDA LIVIANA (SIN RAM)
+# BUSQUEDA LIVIANA
 # =========================
 def buscar_en_base(pregunta, max_resultados=5):
     pregunta = normalizar(pregunta)
@@ -78,13 +76,13 @@ def buscar_en_base(pregunta, max_resultados=5):
 
 
 # =========================
-# IA + RAG
+# RESPUESTA
 # =========================
-def responder(pregunta, lat=None, lon=None):
+def responder(pregunta):
 
     resultados = buscar_en_base(pregunta)
 
-    # 🔹 Si encuentra en base municipal → responde sin IA
+    # 🔹 Si encuentra datos municipales → responde directo
     if resultados:
         respuesta = "Encontré estos registros municipales:\n\n"
         for l in resultados:
@@ -97,28 +95,31 @@ def responder(pregunta, lat=None, lon=None):
 
         return respuesta.strip()
 
-    # 🔹 Si no encuentra → usa Gemini
-    if not modelo_ia:
+    # 🔹 Si no encuentra → usa Gemini 2.5 Flash
+    if not cliente_ia:
         return "No encontré datos en la base municipal y la IA no está configurada."
 
     prompt = f"""
 Sos un asistente municipal inteligente de la ciudad de Pergamino.
 Respondé claro, breve y profesional.
-Si es una consulta municipal, orientá al vecino correctamente.
+Si es una consulta municipal, orientá correctamente al vecino.
 
 Pregunta:
 {pregunta}
 """
 
     try:
-        response = modelo_ia.generate_content(prompt)
+        response = cliente_ia.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         return f"Error IA: {str(e)}"
 
 
 # =========================
-# STARTUP (SIN CARGAR EN RAM)
+# STARTUP
 # =========================
 @app.on_event("startup")
 def startup_event():
@@ -129,7 +130,7 @@ def startup_event():
         with open(DATA_PATH, "wb") as f:
             f.write(r.content)
 
-    print("✅ Archivo listo (no cargado en memoria)")
+    print("✅ Archivo listo (sin cargar en memoria)")
 
 
 # =========================
@@ -139,25 +140,14 @@ def startup_event():
 def bot(
     session_id: str,
     pregunta: str,
-    lat: Optional[float] = None,
-    lon: Optional[float] = None,
 ):
     limpiar_memoria()
 
-    mem = memoria.get(session_id, {})
-
-    if lat is None:
-        lat = mem.get("lat")
-    if lon is None:
-        lon = mem.get("lon")
-
     memoria[session_id] = {
-        "lat": lat,
-        "lon": lon,
         "ts": time.time()
     }
 
-    respuesta = responder(pregunta, lat, lon)
+    respuesta = responder(pregunta)
 
     return {
         "respuesta": respuesta
@@ -173,23 +163,12 @@ async def telegram_webhook(request: Request):
 
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
 
-        if "location" in data["message"]:
-            lat = data["message"]["location"]["latitude"]
-            lon = data["message"]["location"]["longitude"]
-
-            resultado = bot(
-                session_id=str(chat_id),
-                pregunta="¿Qué hay en esta zona?",
-                lat=lat,
-                lon=lon
-            )
-        else:
-            text = data["message"].get("text", "")
-            resultado = bot(
-                session_id=str(chat_id),
-                pregunta=text
-            )
+        resultado = bot(
+            session_id=str(chat_id),
+            pregunta=text
+        )
 
         requests.post(
             f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage",
@@ -201,4 +180,3 @@ async def telegram_webhook(request: Request):
         )
 
     return {"ok": True}
-
