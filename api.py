@@ -31,7 +31,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    modelo_ia = genai.GenerativeModel("gemini-1.5-flash")
+    modelo_ia = genai.GenerativeModel("gemini-2.5-flash")
 else:
     modelo_ia = None
 
@@ -201,3 +201,4 @@ async def telegram_webhook(request: Request):
         )
 
     return {"ok": True}
+
