@@ -8,7 +8,7 @@ import requests
 import time
 import google.generativeai as genai
 
-app = FastAPI(title="IDE Pergamino BOT - RAG Municipal (Gemini)")
+app = FastAPI(title="IDE Pergamino BOT - RAG Municipal (Low Memory)")
 
 # =========================
 # CORS
@@ -35,7 +35,6 @@ if GEMINI_API_KEY:
 else:
     modelo_ia = None
 
-lugares = []
 memoria = {}
 MEMORIA_TTL = 600
 
@@ -43,16 +42,6 @@ MEMORIA_TTL = 600
 # =========================
 # UTILIDADES
 # =========================
-def distancia_metros(lat1, lon1, lat2, lon2):
-    R = 6371000
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
 def normalizar(texto):
     return texto.lower().strip()
 
@@ -65,89 +54,82 @@ def limpiar_memoria():
 
 
 # =========================
-# BUSQUEDA BASE MUNICIPAL
+# BUSQUEDA LIVIANA (SIN RAM)
 # =========================
 def buscar_en_base(pregunta, max_resultados=5):
     pregunta = normalizar(pregunta)
     resultados = []
 
-    for l in lugares:
-        texto = f"{l.get('nombre','')} {l.get('tipo','')} {l.get('capa_origen','')}".lower()
-        if any(p in texto for p in pregunta.split()):
-            resultados.append(l)
+    if not os.path.exists(DATA_PATH):
+        return resultados
 
-    return resultados[:max_resultados]
+    with open(DATA_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        registros = data if isinstance(data, list) else data.get("features", [])
 
+        for l in registros:
+            texto = f"{l.get('nombre','')} {l.get('tipo','')} {l.get('capa_origen','')}".lower()
+            if any(p in texto for p in pregunta.split()):
+                resultados.append(l)
+                if len(resultados) >= max_resultados:
+                    break
 
-def construir_contexto(resultados):
-    contexto = ""
-    for l in resultados:
-        contexto += f"""
-Nombre: {l.get('nombre')}
-Tipo: {l.get('tipo')}
-Capa: {l.get('capa_origen')}
-Latitud: {l.get('lat')}
-Longitud: {l.get('lon')}
----
-"""
-    return contexto
+    return resultados
 
 
 # =========================
-# IA CON CONTEXTO (RAG + GEMINI)
+# IA + RAG
 # =========================
-def responder_con_rag(pregunta, lat=None, lon=None):
+def responder(pregunta, lat=None, lon=None):
 
     resultados = buscar_en_base(pregunta)
 
-    # Si hay resultados en base municipal → responder directo sin IA
+    # 🔹 Si encuentra en base municipal → responde sin IA
     if resultados:
         respuesta = "Encontré estos registros municipales:\n\n"
         for l in resultados:
             respuesta += f"• {l.get('nombre')} ({l.get('tipo')})\n"
+
             if l.get("lat") and l.get("lon"):
                 respuesta += f"https://www.google.com/maps?q={l.get('lat')},{l.get('lon')}\n"
+
             respuesta += "\n"
+
         return respuesta.strip()
 
-    # Si no hay resultados → usar Gemini
+    # 🔹 Si no encuentra → usa Gemini
     if not modelo_ia:
         return "No encontré datos en la base municipal y la IA no está configurada."
 
     prompt = f"""
 Sos un asistente municipal inteligente de la ciudad de Pergamino.
-Respondé de forma clara, breve y profesional.
+Respondé claro, breve y profesional.
+Si es una consulta municipal, orientá al vecino correctamente.
 
-Pregunta del ciudadano:
+Pregunta:
 {pregunta}
 """
 
     try:
         response = modelo_ia.generate_content(prompt)
         return response.text
-
     except Exception as e:
-        return f"Error en IA: {str(e)}"
+        return f"Error IA: {str(e)}"
 
 
 # =========================
-# CARGA DATOS
+# STARTUP (SIN CARGAR EN RAM)
 # =========================
 @app.on_event("startup")
-def cargar_datos():
-    global lugares
-
+def startup_event():
     if not os.path.exists(DATA_PATH):
-        r = requests.get(DATA_URL, timeout=60)
+        print("Descargando base municipal...")
+        r = requests.get(DATA_URL, timeout=120)
         r.raise_for_status()
         with open(DATA_PATH, "wb") as f:
             f.write(r.content)
 
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    lugares = data if isinstance(data, list) else data.get("features", [])
-    print(f"✅ {len(lugares)} registros cargados")
+    print("✅ Archivo listo (no cargado en memoria)")
 
 
 # =========================
@@ -175,11 +157,10 @@ def bot(
         "ts": time.time()
     }
 
-    respuesta = responder_con_rag(pregunta, lat, lon)
+    respuesta = responder(pregunta, lat, lon)
 
     return {
-        "respuesta": respuesta,
-        "datos_usados": buscar_en_base(pregunta)
+        "respuesta": respuesta
     }
 
 
