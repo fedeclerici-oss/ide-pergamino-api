@@ -2,9 +2,4 @@ fastapi
 uvicorn
 requests
 pyproj
-openai
-google-generativeai
-
-
-
-
+google-genai
